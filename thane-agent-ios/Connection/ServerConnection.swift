@@ -48,6 +48,7 @@ final class ServerConnection {
 
     var registeredCapabilities: [Capability] = []
     var onPlatformRequest: ((PlatformRequest) async -> PlatformResponse)?
+    var onAuthenticationFailure: (() -> Void)?
 
     private let logger = Logger(
         subsystem: "info.nugget.thane-agent-ios",
@@ -152,7 +153,8 @@ final class ServerConnection {
                 let message = try JSONDecoder()
                     .decode(AuthInvalidMessage.self, from: authResponse.rawData)
                     .message
-                throw ConnectionError.authFailed(message)
+                handleAuthenticationFailure(message)
+                return
             }
             guard authResponse.envelope.type == "auth_ok" else {
                 throw ConnectionError.unexpectedMessage(
@@ -336,6 +338,22 @@ final class ServerConnection {
             }
             self.beginConnection(details)
         }
+    }
+
+    func handleAuthenticationFailure(_ message: String) {
+        let error = ConnectionError.authFailed(message)
+        logger.error("Connection failed: \(error.localizedDescription, privacy: .public)")
+        lastError = error.localizedDescription
+        intentionalDisconnect = true
+        activeDetails = nil
+        currentAttemptID = nil
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        cleanupTransport(closeCode: .policyViolation)
+        state = .disconnected
+        providerID = nil
+        account = nil
+        onAuthenticationFailure?()
     }
 
     private func cleanupTransport(closeCode: URLSessionWebSocketTask.CloseCode) {

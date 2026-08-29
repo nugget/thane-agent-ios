@@ -55,6 +55,9 @@ final class AppState {
             }
             return await router.handle(request: request)
         }
+        connection.onAuthenticationFailure = { [weak connectionSettings] in
+            connectionSettings?.isEnabled = false
+        }
 
         do {
             tokenInput = try connectionSettings.storedToken() ?? ""
