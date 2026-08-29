@@ -1,6 +1,28 @@
 import Foundation
 import Security
 
+@MainActor
+protocol CredentialStoring {
+    func save(_ value: String, account: String) throws
+    func load(account: String) throws -> String?
+    func delete(account: String) throws
+}
+
+@MainActor
+struct KeychainCredentialStore: CredentialStoring {
+    func save(_ value: String, account: String) throws {
+        try KeychainStore.save(value, account: account)
+    }
+
+    func load(account: String) throws -> String? {
+        try KeychainStore.load(account: account)
+    }
+
+    func delete(account: String) throws {
+        try KeychainStore.delete(account: account)
+    }
+}
+
 nonisolated enum KeychainStoreError: LocalizedError {
     case encodingFailed
     case unexpectedData

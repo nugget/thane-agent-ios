@@ -11,8 +11,8 @@ struct LocationSnapshotTests {
             locationTimestamp: "2026-08-29T11:59:59Z",
             latitude: 41.88,
             longitude: -87.63,
-            altitudeMeters: 181,
-            ellipsoidalAltitudeMeters: 149,
+            altitudeMeters: nil,
+            ellipsoidalAltitudeMeters: nil,
             horizontalAccuracyMeters: 5,
             verticalAccuracyMeters: nil,
             speedMetersPerSecond: nil,
@@ -34,6 +34,8 @@ struct LocationSnapshotTests {
         #expect(object["horizontal_accuracy_meters"] as? Double == 5)
         #expect(object["accuracy_authorization"] as? String == "full")
         #expect(object["vertical_accuracy_meters"] == nil)
+        #expect(object["altitude_meters"] == nil)
+        #expect(object["ellipsoidal_altitude_meters"] == nil)
         #expect(object["simulated_by_software"] as? Bool == false)
     }
 }

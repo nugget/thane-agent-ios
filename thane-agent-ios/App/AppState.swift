@@ -81,8 +81,8 @@ final class AppState {
         }
     }
 
-    var isConnected: Bool {
-        connection.state == .connected
+    var hasActiveConnection: Bool {
+        connection.state != .disconnected
     }
 
     var displayedError: String? {
@@ -135,6 +135,19 @@ final class AppState {
         connection.disconnect()
     }
 
+    func forgetToken() {
+        configurationError = nil
+        do {
+            try connectionSettings.deleteToken()
+        } catch {
+            configurationError = error.localizedDescription
+            return
+        }
+
+        tokenInput = ""
+        disconnect()
+    }
+
     func setSystemCategory(_ category: SystemContextCategory, enabled: Bool) {
         sharingPreferences.setEnabled(enabled, for: category)
         if category == .network {
@@ -146,6 +159,8 @@ final class AppState {
         sharingPreferences.locationEnabled = enabled
         if enabled {
             locationService.requestWhenInUseAuthorizationIfNeeded()
+        } else {
+            locationService.cancelPendingRequestAfterConsentRevocation()
         }
     }
 

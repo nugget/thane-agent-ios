@@ -57,6 +57,7 @@ final class ServerConnection {
     private var session: URLSession?
     private var readLoopTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
+    private var responseTasks: [UUID: Task<Void, Never>] = [:]
     private var activeDetails: ConnectionDetails?
     private var currentAttemptID: UUID?
     private var intentionalDisconnect = false
@@ -124,9 +125,11 @@ final class ServerConnection {
     }
 
     private func runConnection(_ details: ConnectionDetails, attemptID: UUID) async {
+        guard currentAttemptID == attemptID else { return }
+
         do {
             state = .authenticating
-            let authRequired = try await receiveMessage()
+            let authRequired = try await receiveMessage(attemptID: attemptID)
             guard authRequired.envelope.type == "auth_required" else {
                 throw ConnectionError.unexpectedMessage(
                     "Expected auth_required, got \(authRequired.envelope.type)"
@@ -142,9 +145,9 @@ final class ServerConnection {
                 clientName: details.clientName,
                 clientID: details.clientID,
                 connectionProtocol: WSEndpoint.platformProtocol
-            ))
+            ), attemptID: attemptID)
 
-            let authResponse = try await receiveMessage()
+            let authResponse = try await receiveMessage(attemptID: attemptID)
             if authResponse.envelope.type == "auth_failed" {
                 let message = try JSONDecoder()
                     .decode(AuthInvalidMessage.self, from: authResponse.rawData)
@@ -165,12 +168,12 @@ final class ServerConnection {
                 account = authOK.account
             }
 
-            try await registerCapabilities()
+            try await registerCapabilities(attemptID: attemptID)
             reconnectAttempt = 0
             state = .connected
             lastError = nil
             logger.info("Connected to Thane")
-            try await readLoop()
+            try await readLoop(attemptID: attemptID)
         } catch is CancellationError {
             return
         } catch {
@@ -178,21 +181,21 @@ final class ServerConnection {
         }
     }
 
-    private func registerCapabilities() async throws {
+    private func registerCapabilities(attemptID: UUID) async throws {
         let message = RegisterCapabilitiesMessage(
             id: nextMessageID(),
             type: "register_capabilities",
             capabilities: registeredCapabilities
         )
-        try await sendJSON(message)
+        try await sendJSON(message, attemptID: attemptID)
     }
 
-    private func readLoop() async throws {
+    private func readLoop(attemptID: UUID) async throws {
         while !Task.isCancelled {
-            let received = try await receiveMessage()
+            let received = try await receiveMessage(attemptID: attemptID)
             switch received.envelope.type {
             case "ping":
-                try await sendJSON(PongMessage(type: "pong"))
+                try await sendJSON(PongMessage(type: "pong"), attemptID: attemptID)
             case "result":
                 continue
             case "platform_request":
@@ -200,9 +203,7 @@ final class ServerConnection {
                     PlatformRequest.self,
                     from: received.rawData
                 )
-                Task { [weak self] in
-                    await self?.respond(to: request)
-                }
+                startResponseTask(request, attemptID: attemptID)
             case "companion_request":
                 throw ConnectionError.unexpectedMessage(
                     "Server negotiated companion_request instead of platform_request"
@@ -215,7 +216,19 @@ final class ServerConnection {
         }
     }
 
-    private func respond(to request: PlatformRequest) async {
+    private func startResponseTask(_ request: PlatformRequest, attemptID: UUID) {
+        let taskID = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.respond(to: request, attemptID: attemptID)
+            self.responseTasks[taskID] = nil
+        }
+        responseTasks[taskID] = task
+    }
+
+    private func respond(to request: PlatformRequest, attemptID: UUID) async {
+        guard currentAttemptID == attemptID, !Task.isCancelled else { return }
+
         let response: PlatformResponse
         if let onPlatformRequest {
             response = await onPlatformRequest(request)
@@ -232,8 +245,14 @@ final class ServerConnection {
             )
         }
 
+        guard currentAttemptID == attemptID, !Task.isCancelled else { return }
+
         do {
-            try await sendJSON(response)
+            try await sendJSON(response, attemptID: attemptID)
+        } catch is CancellationError {
+            return
+        } catch ConnectionError.staleAttempt {
+            return
         } catch {
             logger.error(
                 "Failed to send platform response: \(error.localizedDescription, privacy: .public)"
@@ -246,22 +265,28 @@ final class ServerConnection {
         return nextID
     }
 
-    private func sendJSON<T: Encodable>(_ value: T) async throws {
+    private func sendJSON<T: Encodable>(_ value: T, attemptID: UUID) async throws {
+        guard currentAttemptID == attemptID else {
+            throw ConnectionError.staleAttempt
+        }
         let data = try JSONEncoder().encode(value)
         guard let text = String(data: data, encoding: .utf8) else {
             throw ConnectionError.encodingFailed
         }
-        guard let webSocketTask else {
+        guard currentAttemptID == attemptID, let webSocketTask else {
             throw ConnectionError.notConnected
         }
         try await webSocketTask.send(.string(text))
     }
 
-    private func receiveMessage() async throws -> ReceivedMessage {
-        guard let webSocketTask else {
+    private func receiveMessage(attemptID: UUID) async throws -> ReceivedMessage {
+        guard currentAttemptID == attemptID, let webSocketTask else {
             throw ConnectionError.notConnected
         }
         let message = try await webSocketTask.receive()
+        guard currentAttemptID == attemptID, self.webSocketTask === webSocketTask else {
+            throw ConnectionError.staleAttempt
+        }
         let data: Data
         switch message {
         case .string(let text):
@@ -314,6 +339,10 @@ final class ServerConnection {
     }
 
     private func cleanupTransport(closeCode: URLSessionWebSocketTask.CloseCode) {
+        for task in responseTasks.values {
+            task.cancel()
+        }
+        responseTasks.removeAll()
         webSocketTask?.cancel(with: closeCode, reason: nil)
         webSocketTask = nil
         session?.invalidateAndCancel()
@@ -323,6 +352,7 @@ final class ServerConnection {
 
 nonisolated enum ConnectionError: LocalizedError {
     case notConnected
+    case staleAttempt
     case encodingFailed
     case decodingFailed
     case unexpectedMessage(String)
@@ -331,6 +361,7 @@ nonisolated enum ConnectionError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .notConnected: "Not connected to Thane."
+        case .staleAttempt: "The WebSocket connection attempt is no longer current."
         case .encodingFailed: "Failed to encode a WebSocket message."
         case .decodingFailed: "Failed to decode a WebSocket message."
         case .unexpectedMessage(let message): "Unexpected message: \(message)"

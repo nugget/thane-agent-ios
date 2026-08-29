@@ -54,6 +54,12 @@ struct RootView: View {
                 ))
                 .textContentType(.password)
                 .textFieldStyle(.roundedBorder)
+
+                Button("Forget Token", role: .destructive) {
+                    appState.forgetToken()
+                }
+                .font(.footnote)
+                .frame(maxWidth: .infinity, alignment: .trailing)
             }
 
             if let account = appState.connection.account {
@@ -73,7 +79,7 @@ struct RootView: View {
             }
 
             Group {
-                if appState.isConnected {
+                if appState.hasActiveConnection {
                     Button("Disconnect", role: .destructive) {
                         appState.disconnect()
                     }

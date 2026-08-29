@@ -1,13 +1,26 @@
 import CoreLocation
 import Foundation
 
+@MainActor
+protocol LocationManaging: AnyObject {
+    var delegate: (any CLLocationManagerDelegate)? { get set }
+    var desiredAccuracy: CLLocationAccuracy { get set }
+    var authorizationStatus: CLAuthorizationStatus { get }
+    var accuracyAuthorization: CLAccuracyAuthorization { get }
+
+    func requestWhenInUseAuthorization()
+    func requestLocation()
+}
+
+extension CLLocationManager: LocationManaging {}
+
 nonisolated struct LocationSnapshot: Codable, Equatable, Sendable {
     let capturedAt: String
     let locationTimestamp: String
     let latitude: Double
     let longitude: Double
-    let altitudeMeters: Double
-    let ellipsoidalAltitudeMeters: Double
+    let altitudeMeters: Double?
+    let ellipsoidalAltitudeMeters: Double?
     let horizontalAccuracyMeters: Double
     let verticalAccuracyMeters: Double?
     let speedMetersPerSecond: Double?
@@ -90,17 +103,20 @@ nonisolated enum LocationServiceError: PlatformServiceError, Sendable {
 final class LocationService: NSObject, CLLocationManagerDelegate {
     private static let timestampFormatter = ISO8601DateFormatter()
 
-    private let manager: CLLocationManager
+    private let manager: any LocationManaging
     private let preferences: SharingPreferences
+    private let requestTimeout: Duration
     private var pendingContinuation: CheckedContinuation<LocationSnapshot, Error>?
     private var timeoutTask: Task<Void, Never>?
 
     init(
         preferences: SharingPreferences,
-        manager: CLLocationManager = CLLocationManager()
+        manager: any LocationManaging = CLLocationManager(),
+        requestTimeout: Duration = .seconds(15)
     ) {
         self.preferences = preferences
         self.manager = manager
+        self.requestTimeout = requestTimeout
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBest
@@ -126,27 +142,15 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     /// Called only from the local toggle. A remote tool invocation never
     /// displays a system permission prompt.
     func requestWhenInUseAuthorizationIfNeeded() {
-        guard manager.authorizationStatus == .notDetermined else { return }
+        guard preferences.locationEnabled,
+              manager.authorizationStatus == .notDetermined else {
+            return
+        }
         manager.requestWhenInUseAuthorization()
     }
 
     func currentLocation() async throws -> LocationSnapshot {
-        guard preferences.locationEnabled else {
-            throw LocationServiceError.sharingDisabled
-        }
-
-        switch manager.authorizationStatus {
-        case .notDetermined:
-            throw LocationServiceError.permissionNotRequested
-        case .denied:
-            throw LocationServiceError.permissionDenied
-        case .restricted:
-            throw LocationServiceError.permissionRestricted
-        case .authorizedAlways, .authorizedWhenInUse:
-            break
-        @unknown default:
-            throw LocationServiceError.permissionDenied
-        }
+        try validateAccess()
 
         guard pendingContinuation == nil else {
             throw LocationServiceError.requestInProgress
@@ -156,9 +160,10 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
             try await withCheckedThrowingContinuation { continuation in
                 pendingContinuation = continuation
                 manager.requestLocation()
+                let requestTimeout = self.requestTimeout
                 timeoutTask = Task { [weak self] in
                     do {
-                        try await Task.sleep(for: .seconds(15))
+                        try await Task.sleep(for: requestTimeout)
                     } catch {
                         return
                     }
@@ -172,10 +177,22 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         }
     }
 
+    func cancelPendingRequestAfterConsentRevocation() {
+        guard !preferences.locationEnabled else { return }
+        finish(throwing: LocationServiceError.sharingDisabled)
+    }
+
     func locationManager(
-        _ manager: CLLocationManager,
+        _: CLLocationManager,
         didUpdateLocations locations: [CLLocation]
     ) {
+        do {
+            try validateAccess()
+        } catch {
+            finish(throwing: error)
+            return
+        }
+
         guard let location = locations
             .filter({ CLLocationCoordinate2DIsValid($0.coordinate) && $0.horizontalAccuracy >= 0 })
             .max(by: { $0.timestamp < $1.timestamp }) else {
@@ -184,21 +201,22 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         }
 
         let source = location.sourceInformation
+        let hasValidAltitude = location.verticalAccuracy >= 0
         finish(returning: LocationSnapshot(
             capturedAt: Self.timestampFormatter.string(from: Date()),
             locationTimestamp: Self.timestampFormatter.string(from: location.timestamp),
             latitude: location.coordinate.latitude,
             longitude: location.coordinate.longitude,
-            altitudeMeters: location.altitude,
-            ellipsoidalAltitudeMeters: location.ellipsoidalAltitude,
+            altitudeMeters: hasValidAltitude ? location.altitude : nil,
+            ellipsoidalAltitudeMeters: hasValidAltitude ? location.ellipsoidalAltitude : nil,
             horizontalAccuracyMeters: location.horizontalAccuracy,
-            verticalAccuracyMeters: location.verticalAccuracy >= 0 ? location.verticalAccuracy : nil,
+            verticalAccuracyMeters: hasValidAltitude ? location.verticalAccuracy : nil,
             speedMetersPerSecond: location.speed >= 0 ? location.speed : nil,
             speedAccuracyMetersPerSecond: location.speedAccuracy >= 0 ? location.speedAccuracy : nil,
             courseDegrees: location.course >= 0 ? location.course : nil,
             courseAccuracyDegrees: location.courseAccuracy >= 0 ? location.courseAccuracy : nil,
             floor: location.floor?.level,
-            authorization: Self.authorizationLabel(manager.authorizationStatus),
+            authorization: Self.authorizationLabel(authorizationStatus),
             accuracyAuthorization: Self.accuracyLabel(manager.accuracyAuthorization),
             simulatedBySoftware: source?.isSimulatedBySoftware,
             producedByAccessory: source?.isProducedByAccessory
@@ -213,9 +231,9 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         }
     }
 
-    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+    func locationManagerDidChangeAuthorization(_: CLLocationManager) {
         guard pendingContinuation != nil else { return }
-        switch manager.authorizationStatus {
+        switch authorizationStatus {
         case .denied:
             finish(throwing: LocationServiceError.permissionDenied)
         case .restricted:
@@ -226,6 +244,13 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     }
 
     private func finish(returning snapshot: LocationSnapshot) {
+        do {
+            try validateAccess()
+        } catch {
+            finish(throwing: error)
+            return
+        }
+
         timeoutTask?.cancel()
         timeoutTask = nil
         let continuation = pendingContinuation
@@ -239,6 +264,25 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         let continuation = pendingContinuation
         pendingContinuation = nil
         continuation?.resume(throwing: error)
+    }
+
+    private func validateAccess() throws {
+        guard preferences.locationEnabled else {
+            throw LocationServiceError.sharingDisabled
+        }
+
+        switch authorizationStatus {
+        case .notDetermined:
+            throw LocationServiceError.permissionNotRequested
+        case .denied:
+            throw LocationServiceError.permissionDenied
+        case .restricted:
+            throw LocationServiceError.permissionRestricted
+        case .authorizedAlways, .authorizedWhenInUse:
+            break
+        @unknown default:
+            throw LocationServiceError.permissionDenied
+        }
     }
 
     private nonisolated static func authorizationLabel(
