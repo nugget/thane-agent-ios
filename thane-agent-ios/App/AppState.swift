@@ -69,6 +69,11 @@ final class AppState {
             }
             return await router.handle(request: request)
         }
+        connection.onConnected = { [weak observationPublisher] in
+            // Observation authentication resolves this client ID through the
+            // durable inventory written by a successful realtime handshake.
+            observationPublisher?.flush()
+        }
         connection.onAuthenticationFailure = { [weak connectionSettings, weak observationPublisher] in
             connectionSettings?.isEnabled = false
             observationPublisher?.configure(baseURL: nil, token: nil, clientID: "")

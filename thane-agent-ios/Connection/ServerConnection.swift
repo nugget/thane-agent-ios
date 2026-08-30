@@ -49,6 +49,7 @@ final class ServerConnection {
 
     var registeredCapabilities: [Capability] = []
     var onPlatformRequest: ((PlatformRequest) async -> PlatformResponse)?
+    var onConnected: (() -> Void)?
     var onAuthenticationFailure: (() -> Void)?
 
     private let logger = Logger(
@@ -175,10 +176,7 @@ final class ServerConnection {
             }
 
             try await registerCapabilities(attemptID: attemptID)
-            reconnectAttempt = 0
-            state = .connected
-            lastError = nil
-            logger.info("Connected to Thane")
+            handleConnectionEstablished()
             try await readLoop(attemptID: attemptID)
         } catch is CancellationError {
             return
@@ -369,6 +367,14 @@ final class ServerConnection {
         providerID = nil
         account = nil
         onAuthenticationFailure?()
+    }
+
+    func handleConnectionEstablished() {
+        reconnectAttempt = 0
+        state = .connected
+        lastError = nil
+        logger.info("Connected to Thane")
+        onConnected?()
     }
 
     private func cleanupTransport(closeCode: URLSessionWebSocketTask.CloseCode) {

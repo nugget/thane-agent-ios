@@ -36,6 +36,16 @@ final class URLSessionObservationUploader: ObservationUploading {
         to baseURL: URL,
         token: String
     ) async throws -> ObservationIngestResult {
+        let request = try Self.request(for: batch, baseURL: baseURL, token: token)
+        let (data, response) = try await session.data(for: request)
+        return try Self.result(from: data, response: response)
+    }
+
+    nonisolated static func request(
+        for batch: ObservationBatch,
+        baseURL: URL,
+        token: String
+    ) throws -> URLRequest {
         let endpoint = baseURL
             .appendingPathComponent("v1")
             .appendingPathComponent("companion")
@@ -46,8 +56,13 @@ final class URLSessionObservationUploader: ObservationUploading {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.httpBody = try ObservationCoding.encoder().encode(batch)
+        return request
+    }
 
-        let (data, response) = try await session.data(for: request)
+    nonisolated static func result(
+        from data: Data,
+        response: URLResponse
+    ) throws -> ObservationIngestResult {
         guard let response = response as? HTTPURLResponse else {
             throw ObservationUploadError.invalidResponse
         }
