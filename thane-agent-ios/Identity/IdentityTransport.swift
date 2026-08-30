@@ -53,6 +53,14 @@ final class URLSessionIdentityFetcher: IdentityEvidenceFetching {
         from data: Data,
         response: URLResponse
     ) throws -> ThaneIdentityEvidence {
+        struct SchemaProbe: Decodable {
+            let schemaVersion: Int
+
+            enum CodingKeys: String, CodingKey {
+                case schemaVersion = "schema_version"
+            }
+        }
+
         guard let response = response as? HTTPURLResponse else {
             throw IdentityFetchError.invalidResponse
         }
@@ -62,14 +70,25 @@ final class URLSessionIdentityFetcher: IdentityEvidenceFetching {
                 message: safeErrorMessage(from: data)
             )
         }
-        let evidence = try ThaneIdentityCoding.decoder().decode(
-            ThaneIdentityEvidence.self,
-            from: data
-        )
-        guard evidence.schemaVersion == 1 else {
-            throw IdentityFetchError.unsupportedSchema(evidence.schemaVersion)
+
+        let schemaVersion: Int
+        do {
+            schemaVersion = try JSONDecoder().decode(SchemaProbe.self, from: data).schemaVersion
+        } catch {
+            throw IdentityFetchError.invalidResponse
         }
-        return evidence
+        guard schemaVersion == 1 else {
+            throw IdentityFetchError.unsupportedSchema(schemaVersion)
+        }
+
+        do {
+            return try ThaneIdentityCoding.decoder().decode(
+                ThaneIdentityEvidence.self,
+                from: data
+            )
+        } catch {
+            throw IdentityFetchError.invalidResponse
+        }
     }
 
     private nonisolated static func safeErrorMessage(from data: Data) -> String {

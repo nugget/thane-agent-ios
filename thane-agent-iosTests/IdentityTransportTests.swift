@@ -33,15 +33,29 @@ struct IdentityTransportTests {
         #expect(evidence.core.currentCommit.oid == "fedcba9876543210fedcba9876543210fedcba98")
     }
 
-    @Test("Unsupported schemas fail explicitly")
+    @Test("Unsupported schemas fail explicitly without decoding their body")
     func unsupportedSchema() throws {
-        let data = Data(
-            String(decoding: IdentityTestFixture.json, as: UTF8.self)
-                .replacingOccurrences(of: #""schema_version": 1"#, with: #""schema_version": 2"#)
-                .utf8
-        )
+        let data = Data(#"{"schema_version":2,"replacement_shape":true}"#.utf8)
 
         #expect(throws: IdentityFetchError.unsupportedSchema(2)) {
+            _ = try URLSessionIdentityFetcher.evidence(from: data, response: try response(status: 200))
+        }
+    }
+
+    @Test("Malformed schema-one evidence uses the operator-readable invalid response")
+    func malformedCurrentSchema() throws {
+        let data = Data(#"{"schema_version":1}"#.utf8)
+
+        #expect(throws: IdentityFetchError.invalidResponse) {
+            _ = try URLSessionIdentityFetcher.evidence(from: data, response: try response(status: 200))
+        }
+    }
+
+    @Test("Malformed JSON is invalid")
+    func malformedJSON() throws {
+        let data = Data("{".utf8)
+
+        #expect(throws: IdentityFetchError.invalidResponse) {
             _ = try URLSessionIdentityFetcher.evidence(from: data, response: try response(status: 200))
         }
     }
