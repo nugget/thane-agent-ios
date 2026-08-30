@@ -80,14 +80,9 @@ final class AppState {
             // durable inventory written by a successful realtime handshake.
             observationPublisher?.flush()
         }
-        connection.onAuthenticationFailure = { [weak connectionSettings, weak observationPublisher] in
-            connectionSettings?.isEnabled = false
-            observationPublisher?.configure(
-                baseURL: nil,
-                token: nil,
-                clientID: "",
-                identityID: nil
-            )
+        connection.onAuthenticationFailure = { [weak self] in
+            self?.connectionSettings.isEnabled = false
+            self?.suspendObservationDelivery()
         }
         identityService.onEvidenceUpdated = { [weak self] _ in
             self?.reconcileIdentityBoundary()
@@ -188,11 +183,10 @@ final class AppState {
 
     func activate() {
         locationService.restoreBackgroundMonitoringIfAuthorized()
-        configureObservationPublisher()
-        if identityContinuity.permitsPrivateDelivery {
-            publishSystemContextIfEnabled()
-            observationPublisher.flush()
-        }
+        // A foreground transition must revalidate the current endpoint and
+        // token before either transport can release private data.
+        suspendPrivateDelivery()
+        publishSystemContextIfEnabled()
         guard connectionSettings.isEnabled else { return }
         refreshIdentityForConfiguredConnection()
     }
@@ -222,13 +216,13 @@ final class AppState {
         }
 
         connectionSettings.isEnabled = true
-        stopPrivateDelivery()
+        suspendPrivateDelivery()
         identityService.refresh(from: url, token: token)
     }
 
     func disconnect() {
         connectionSettings.isEnabled = false
-        stopPrivateDelivery()
+        suspendPrivateDelivery()
     }
 
     func refreshIdentity() {
@@ -242,6 +236,7 @@ final class AppState {
             configurationError = "Enter a Thane API token before refreshing identity evidence."
             return
         }
+        suspendPrivateDelivery()
         identityService.refresh(from: url, token: token)
     }
 
@@ -263,7 +258,7 @@ final class AppState {
     func forgetThane() async {
         configurationError = nil
         connectionSettings.isEnabled = false
-        stopPrivateDelivery()
+        connection.disconnect()
         do {
             try await observationPublisher.discardAllPending()
             try identityPinning.forget()
@@ -321,14 +316,22 @@ final class AppState {
     }
 
     private func configureObservationPublisher() {
-        guard connectionSettings.isEnabled,
-              identityContinuity.permitsPrivateDelivery,
-              let pin = identityPinning.pin else {
+        guard let pin = identityPinning.pin else {
             observationPublisher.configure(
                 baseURL: nil,
                 token: nil,
                 clientID: "",
                 identityID: nil
+            )
+            return
+        }
+        guard connectionSettings.isEnabled,
+              identityContinuity.permitsPrivateDelivery else {
+            observationPublisher.configure(
+                baseURL: nil,
+                token: nil,
+                clientID: "",
+                identityID: pin.identityID
             )
             return
         }
@@ -345,10 +348,7 @@ final class AppState {
         let token = tokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !token.isEmpty else { return }
 
-        if identityContinuity.permitsPrivateDelivery,
-           connection.state == .disconnected {
-            establishMatchedConnection(url: url, token: token)
-        }
+        suspendPrivateDelivery()
         identityService.refresh(from: url, token: token)
     }
 
@@ -359,7 +359,7 @@ final class AppState {
         }
         guard identityContinuity.permitsPrivateDelivery,
               let url = connectionSettings.serverURL else {
-            stopPrivateDelivery()
+            suspendPrivateDelivery()
             if identityContinuity == .mismatch {
                 configurationError = "The presented Thane identity does not match this iPhone's pin. Private delivery is blocked."
             }
@@ -384,14 +384,18 @@ final class AppState {
         )
     }
 
-    private func stopPrivateDelivery() {
+    private func suspendPrivateDelivery() {
+        suspendObservationDelivery()
+        connection.disconnect()
+    }
+
+    private func suspendObservationDelivery() {
         observationPublisher.configure(
             baseURL: nil,
             token: nil,
             clientID: "",
-            identityID: nil
+            identityID: identityPinning.pin?.identityID
         )
-        connection.disconnect()
     }
 
     private func publishSystemContextIfEnabled(withdrawIfDisabled: Bool = false) {

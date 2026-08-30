@@ -79,6 +79,61 @@ struct ObservationPublisherTests {
         #expect(publisher.lastError == nil)
     }
 
+    @Test("A pinned queue records withdrawals while delivery is suspended")
+    func suspendedDeliveryRecordsWithdrawal() async throws {
+        let fixture = try PublisherFixture()
+        defer { fixture.cleanup() }
+        let outbox = ObservationOutbox(fileURL: fixture.fileURL)
+        let identityID = "thane:ed25519:SHA256:primary"
+        let uploader = SequencedObservationUploader()
+        let publisher = ObservationPublisher(outbox: outbox, uploader: uploader)
+
+        publisher.configure(
+            baseURL: nil,
+            token: nil,
+            clientID: "",
+            identityID: identityID
+        )
+        publisher.withdraw(.location)
+
+        try await waitUntil { publisher.pendingCount == 1 }
+        let pending = try await outbox.pending(for: identityID)
+        #expect(pending.count == 1)
+        #expect(pending.first?.kind == .location)
+        #expect(pending.first?.status == .withdrawn)
+        #expect(uploader.callCount == 0)
+    }
+
+    @Test("Forgetting drains pending mutations before deleting the queue")
+    func forgettingDrainsPendingMutations() async throws {
+        let fixture = try PublisherFixture()
+        defer { fixture.cleanup() }
+        let outbox = ObservationOutbox(fileURL: fixture.fileURL)
+        let identityID = "thane:ed25519:SHA256:primary"
+        let publisher = ObservationPublisher(
+            outbox: outbox,
+            uploader: SequencedObservationUploader()
+        )
+
+        publisher.configure(
+            baseURL: nil,
+            token: nil,
+            clientID: "",
+            identityID: identityID
+        )
+        publisher.withdraw(.location)
+        publisher.withdraw(.systemContext)
+
+        try await publisher.discardAllPending()
+        try await Task.sleep(for: .milliseconds(10))
+
+        #expect(!FileManager.default.fileExists(atPath: fixture.fileURL.path))
+        await #expect(throws: ObservationOutboxError.self) {
+            _ = try await outbox.pending(for: identityID)
+        }
+        #expect(publisher.pendingCount == 0)
+    }
+
     private func waitUntil(
         _ condition: @escaping @MainActor () -> Bool
     ) async throws {

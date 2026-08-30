@@ -59,6 +59,42 @@ struct AppStateIdentityBoundaryTests {
                 == "The presented Thane identity does not match this iPhone's pin. Private delivery is blocked."
         )
     }
+
+    @Test("Activation waits for fresh identity evidence before reconnecting")
+    func activationWaitsForFreshEvidence() async throws {
+        let evidence = try IdentityTestFixture.evidence()
+        let fetcher = AppIdentityFetcher(evidence: evidence)
+        let identityService = IdentityService(fetcher: fetcher)
+        let baseURL = try #require(URL(string: "https://thane.example"))
+        identityService.refresh(from: baseURL, token: "secret")
+        try await waitUntil { !identityService.isRefreshing }
+        #expect(identityService.evidence(for: baseURL) == evidence)
+
+        fetcher.result = .failure(AppIdentityTestError.expectedFailure)
+        let fixture = try AppIdentityFixture(
+            evidence: evidence,
+            pinnedEvidence: evidence,
+            identityService: identityService,
+            connectionEnabled: true
+        )
+        defer { fixture.cleanup() }
+
+        fixture.appState.activate()
+
+        #expect(identityService.isRefreshing)
+        #expect(fixture.appState.identityContinuity == .unavailable)
+        #expect(fixture.appState.connection.state == .disconnected)
+        try await waitUntil { !identityService.isRefreshing }
+        #expect(fixture.appState.connection.state == .disconnected)
+    }
+
+    private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async throws {
+        for _ in 0..<100 {
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        Issue.record("Timed out waiting for app identity state")
+    }
 }
 
 @MainActor
@@ -71,7 +107,9 @@ private final class AppIdentityFixture {
 
     init(
         evidence: ThaneIdentityEvidence,
-        pinnedEvidence: ThaneIdentityEvidence? = nil
+        pinnedEvidence: ThaneIdentityEvidence? = nil,
+        identityService: IdentityService? = nil,
+        connectionEnabled: Bool = false
     ) throws {
         suite = "AppStateIdentityBoundaryTests.\(UUID().uuidString)"
         defaults = try #require(UserDefaults(suiteName: suite))
@@ -87,6 +125,7 @@ private final class AppIdentityFixture {
         }
         let settings = ConnectionSettings(defaults: defaults, credentialStore: tokenStore)
         settings.urlString = "https://thane.example"
+        settings.isEnabled = connectionEnabled
         let publisher = ObservationPublisher(
             outbox: ObservationOutbox(
                 fileURL: directoryURL.appendingPathComponent("outbox.json")
@@ -97,7 +136,7 @@ private final class AppIdentityFixture {
             connectionSettings: settings,
             sharingPreferences: SharingPreferences(defaults: defaults),
             observationPublisher: publisher,
-            identityService: IdentityService(
+            identityService: identityService ?? IdentityService(
                 fetcher: AppIdentityFetcher(evidence: evidence)
             ),
             identityPinning: pinning
@@ -124,15 +163,19 @@ private final class AppIdentityFixture {
 
 @MainActor
 private final class AppIdentityFetcher: IdentityEvidenceFetching {
-    let evidence: ThaneIdentityEvidence
+    var result: Result<ThaneIdentityEvidence, Error>
 
     init(evidence: ThaneIdentityEvidence) {
-        self.evidence = evidence
+        result = .success(evidence)
     }
 
     func fetch(from baseURL: URL, token: String) async throws -> ThaneIdentityEvidence {
-        evidence
+        try result.get()
     }
+}
+
+private enum AppIdentityTestError: Error {
+    case expectedFailure
 }
 
 @MainActor

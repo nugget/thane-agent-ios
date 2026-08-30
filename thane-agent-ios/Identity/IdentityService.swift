@@ -29,10 +29,10 @@ final class IdentityService {
         guard !trimmedToken.isEmpty else { return }
 
         refreshTask?.cancel()
-        if sourceURL != baseURL {
-            evidence = nil
-            lastError = nil
-        }
+        // Evidence describes one completed fetch, including the credentials
+        // used for it. Never let a new attempt inherit an older success.
+        evidence = nil
+        lastError = nil
         sourceURL = baseURL
         isRefreshing = true
         let refreshID = UUID()

@@ -104,6 +104,7 @@ actor ObservationOutbox {
 
     @discardableResult
     func bind(to identityID: String) throws -> Int {
+        try Task.checkCancellation()
         try ensureAvailable()
         guard !identityID.isEmpty else { throw ObservationOutboxError.identityRequired }
         if let existingIdentityID = self.identityID {
@@ -128,7 +129,9 @@ actor ObservationOutbox {
     }
 
     func enqueue(_ event: ObservationEvent, for identityID: String) throws {
+        try Task.checkCancellation()
         try bind(to: identityID)
+        try Task.checkCancellation()
         let previous = eventsByKind[event.kind]
         if let previous, !Self.shouldReplace(previous, with: event) {
             return
@@ -149,6 +152,7 @@ actor ObservationOutbox {
     }
 
     func removeSent(_ eventIDs: Set<UUID>, for identityID: String) throws {
+        try Task.checkCancellation()
         try ensureAvailable()
         try requireIdentity(identityID)
         let previous = eventsByKind

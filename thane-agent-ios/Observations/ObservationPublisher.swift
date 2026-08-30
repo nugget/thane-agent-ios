@@ -24,6 +24,7 @@ final class ObservationPublisher {
     private var uploadTask: Task<Void, Never>?
     private var uploadID: UUID?
     private var preparationTask: Task<Void, Never>?
+    private var enqueueTasks: [UUID: Task<Void, Never>] = [:]
     private var flushRequestedWhileBusy = false
 
     init(
@@ -53,6 +54,11 @@ final class ObservationPublisher {
             preparedIdentityID = nil
             flushRequestedWhileBusy = false
             isUploading = false
+        }
+        if self.identityID != identityID {
+            for task in enqueueTasks.values {
+                task.cancel()
+            }
         }
         self.baseURL = baseURL
         self.token = trimmedToken
@@ -156,10 +162,34 @@ final class ObservationPublisher {
     }
 
     func discardAllPending() async throws {
-        uploadTask?.cancel()
-        preparationTask?.cancel()
-        try await outbox.discardAll()
+        let activeUpload = uploadTask
+        let activePreparation = preparationTask
+        let activeEnqueues = Array(enqueueTasks.values)
+        activeUpload?.cancel()
+        activePreparation?.cancel()
+        for task in activeEnqueues {
+            task.cancel()
+        }
+
+        // Clear the destination before yielding so callbacks cannot create a
+        // new scoped write while the existing work is being drained.
+        baseURL = nil
+        token = nil
+        clientID = ""
+        identityID = nil
         preparedIdentityID = nil
+        uploadTask = nil
+        uploadID = nil
+        preparationTask = nil
+        flushRequestedWhileBusy = false
+        isUploading = false
+
+        await activeUpload?.value
+        await activePreparation?.value
+        for task in activeEnqueues {
+            await task.value
+        }
+        try await outbox.discardAll()
         pendingCount = 0
         lastPublishedAt = nil
         lastError = nil
@@ -167,21 +197,30 @@ final class ObservationPublisher {
 
     private func enqueue(_ makeEvent: @escaping @MainActor () throws -> ObservationEvent) {
         guard let identityID else { return }
-        Task { [weak self] in
+        let taskID = UUID()
+        let task = Task { [weak self] in
             guard let self else { return }
+            defer { enqueueTasks[taskID] = nil }
             do {
-                try await outbox.enqueue(makeEvent(), for: identityID)
+                try Task.checkCancellation()
+                let event = try makeEvent()
+                try Task.checkCancellation()
+                try await outbox.enqueue(event, for: identityID)
+                try Task.checkCancellation()
                 guard self.identityID == identityID else { return }
                 preparedIdentityID = identityID
                 lastError = nil
                 await refreshPendingCount(for: identityID)
                 flush()
+            } catch is CancellationError {
+                return
             } catch {
                 if self.identityID == identityID {
                     record(error)
                 }
             }
         }
+        enqueueTasks[taskID] = task
     }
 
     private func performUpload(
