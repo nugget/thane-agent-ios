@@ -9,6 +9,9 @@ final class IdentityService {
     private(set) var isRefreshing = false
     private(set) var lastError: String?
 
+    var onEvidenceUpdated: ((ThaneIdentityEvidence) -> Void)?
+    var onRefreshFailed: (() -> Void)?
+
     private let fetcher: any IdentityEvidenceFetching
     private let logger = Logger(
         subsystem: "info.nugget.thane-agent-ios",
@@ -26,10 +29,10 @@ final class IdentityService {
         guard !trimmedToken.isEmpty else { return }
 
         refreshTask?.cancel()
-        if sourceURL != baseURL {
-            evidence = nil
-            lastError = nil
-        }
+        // Evidence describes one completed fetch, including the credentials
+        // used for it. Never let a new attempt inherit an older success.
+        evidence = nil
+        lastError = nil
         sourceURL = baseURL
         isRefreshing = true
         let refreshID = UUID()
@@ -50,6 +53,7 @@ final class IdentityService {
                 self.refreshTask = nil
                 self.currentRefreshID = nil
                 self.logger.info("Refreshed presented Thane identity evidence")
+                self.onEvidenceUpdated?(evidence)
             } catch is CancellationError {
                 return
             } catch {
@@ -65,6 +69,7 @@ final class IdentityService {
                 self.logger.error(
                     "Identity evidence refresh failed: \(error.localizedDescription, privacy: .public)"
                 )
+                self.onRefreshFailed?()
             }
         }
     }

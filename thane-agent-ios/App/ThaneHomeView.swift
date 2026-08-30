@@ -3,6 +3,7 @@ import SwiftUI
 struct ThaneHomeView: View {
     @Environment(AppState.self) private var appState
     @State private var showingIdentity = false
+    @State private var showingPin = false
 
     let openSettings: () -> Void
 
@@ -24,14 +25,83 @@ struct ThaneHomeView: View {
                 IdentityEvidenceView(evidence: evidence)
             }
         }
+        .sheet(isPresented: $showingPin) {
+            if let pin = appState.identityPinning.pin {
+                IdentityPinView(pin: pin)
+            }
+        }
     }
 
     @ViewBuilder
     private var identityCard: some View {
         AppCard(title: "This Thane") {
             if let evidence = appState.presentedIdentity {
-                IdentitySummaryButton(evidence: evidence) {
+                IdentitySummaryButton(
+                    evidence: evidence,
+                    status: appState.identityStatusLabel
+                ) {
                     showingIdentity = true
+                }
+
+                switch appState.identityContinuity {
+                case .presented:
+                    Label("Review the evidence before pinning", systemImage: "pin.circle")
+                        .font(.headline)
+                    Text("Private requests and observation uploads remain off until you pin this identity on this iPhone.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Review & Pin") { showingIdentity = true }
+                        .buttonStyle(.borderedProminent)
+                case .mismatch:
+                    Label("Private delivery blocked", systemImage: "exclamationmark.shield.fill")
+                        .font(.headline)
+                        .foregroundStyle(.red)
+                    Text("The instance ID, signing key, or channel CA differs from this iPhone's pin. Compare the exact values before changing identities.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .stale:
+                    Label("Identity matches; evidence is stale", systemImage: "clock.badge.exclamationmark")
+                        .font(.headline)
+                        .foregroundStyle(.orange)
+                    Button("Refresh Evidence") { appState.refreshIdentity() }
+                        .buttonStyle(.bordered)
+                case .matching:
+                    Label(
+                        appState.hasVerifiedReportedCoreChecks
+                            ? "Core checks reported verified"
+                            : "Core evidence includes warnings",
+                        systemImage: appState.hasVerifiedReportedCoreChecks
+                            ? "checkmark.seal.fill"
+                            : "exclamationmark.triangle.fill"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(appState.hasVerifiedReportedCoreChecks ? .green : .orange)
+                case .notPinned, .unavailable:
+                    EmptyView()
+                }
+            } else if let pin = appState.identityPinning.pin {
+                PinnedIdentitySummaryButton(
+                    pin: pin,
+                    status: appState.identityStatusLabel
+                ) {
+                    showingPin = true
+                }
+
+                if appState.identityService.isRefreshing {
+                    HStack(spacing: 12) {
+                        ProgressView()
+                        Text("Reading current identity evidence")
+                            .font(.headline)
+                    }
+                } else {
+                    Label("Current identity evidence is unavailable", systemImage: "questionmark.diamond")
+                        .font(.headline)
+                        .foregroundStyle(.orange)
+                    Text("Private requests and observation uploads remain disabled until the configured endpoint presents identity evidence that matches this pin.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Refresh Identity") { appState.refreshIdentity() }
+                        .buttonStyle(.bordered)
                 }
             } else if appState.identityService.isRefreshing {
                 HStack(spacing: 12) {
@@ -86,7 +156,7 @@ struct ThaneHomeView: View {
                 color: backgroundAvailabilityColor
             )
 
-            Text("Live tools are available while the app is open. Significant location changes can produce short best-effort uploads when separately enabled; iOS controls their timing.")
+            Text("Live tools are available while the app is open and identity evidence matches this iPhone's pin. Significant location changes can produce short best-effort uploads to that same identity when separately enabled; iOS controls their timing.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

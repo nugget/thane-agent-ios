@@ -19,7 +19,12 @@ final class ObservationPublisher {
     private var baseURL: URL?
     private var token: String?
     private var clientID = ""
+    private var identityID: String?
+    private var preparedIdentityID: String?
     private var uploadTask: Task<Void, Never>?
+    private var uploadID: UUID?
+    private var preparationTask: Task<Void, Never>?
+    private var enqueueTasks: [UUID: Task<Void, Never>] = [:]
     private var flushRequestedWhileBusy = false
 
     init(
@@ -28,20 +33,70 @@ final class ObservationPublisher {
     ) {
         self.outbox = outbox
         self.uploader = uploader
-        Task { [weak self] in
-            await self?.refreshPendingCount()
-        }
     }
 
-    func configure(baseURL: URL?, token: String?, clientID: String) {
+    func configure(
+        baseURL: URL?,
+        token: String?,
+        clientID: String,
+        identityID: String?
+    ) {
         let trimmedToken = token?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if baseURL == nil || trimmedToken?.isEmpty != false {
+        let destinationChanged = self.baseURL != baseURL
+            || self.token != trimmedToken
+            || self.clientID != clientID
+            || self.identityID != identityID
+        if destinationChanged {
             uploadTask?.cancel()
+            uploadTask = nil
+            uploadID = nil
+            preparationTask?.cancel()
+            preparedIdentityID = nil
+            flushRequestedWhileBusy = false
+            isUploading = false
+        }
+        if self.identityID != identityID {
+            for task in enqueueTasks.values {
+                task.cancel()
+            }
         }
         self.baseURL = baseURL
         self.token = trimmedToken
         self.clientID = clientID
-        flush()
+        self.identityID = identityID
+
+        guard destinationChanged else {
+            flush()
+            return
+        }
+
+        guard let identityID else {
+            pendingCount = 0
+            isUploading = false
+            return
+        }
+        preparationTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let discardedCount = try await outbox.bind(to: identityID)
+                try Task.checkCancellation()
+                guard self.identityID == identityID else { return }
+                preparedIdentityID = identityID
+                if discardedCount > 0 {
+                    logger.notice(
+                        "Discarded \(discardedCount, privacy: .public) legacy observations without an identity scope"
+                    )
+                }
+                lastError = nil
+                await refreshPendingCount(for: identityID)
+                flush()
+            } catch is CancellationError {
+                return
+            } catch {
+                guard self.identityID == identityID else { return }
+                record(error)
+            }
+        }
     }
 
     func publishLocation(_ snapshot: LocationSnapshot) {
@@ -79,6 +134,8 @@ final class ObservationPublisher {
     func flush() {
         guard let baseURL,
               let token,
+              let identityID,
+              preparedIdentityID == identityID,
               !token.isEmpty,
               !clientID.isEmpty else {
             return
@@ -89,32 +146,97 @@ final class ObservationPublisher {
         }
 
         isUploading = true
+        let clientID = clientID
+        let uploadID = UUID()
+        self.uploadID = uploadID
         uploadTask = Task { [weak self] in
             guard let self else { return }
-            await self.performUpload(baseURL: baseURL, token: token)
+            await self.performUpload(
+                baseURL: baseURL,
+                token: token,
+                clientID: clientID,
+                identityID: identityID,
+                uploadID: uploadID
+            )
         }
+    }
+
+    func discardAllPending() async throws {
+        let activeUpload = uploadTask
+        let activePreparation = preparationTask
+        let activeEnqueues = Array(enqueueTasks.values)
+        activeUpload?.cancel()
+        activePreparation?.cancel()
+        for task in activeEnqueues {
+            task.cancel()
+        }
+
+        // Clear the destination before yielding so callbacks cannot create a
+        // new scoped write while the existing work is being drained.
+        baseURL = nil
+        token = nil
+        clientID = ""
+        identityID = nil
+        preparedIdentityID = nil
+        uploadTask = nil
+        uploadID = nil
+        preparationTask = nil
+        flushRequestedWhileBusy = false
+        isUploading = false
+
+        await activeUpload?.value
+        await activePreparation?.value
+        for task in activeEnqueues {
+            await task.value
+        }
+        try await outbox.discardAll()
+        pendingCount = 0
+        lastPublishedAt = nil
+        lastError = nil
     }
 
     private func enqueue(_ makeEvent: @escaping @MainActor () throws -> ObservationEvent) {
-        Task { [weak self] in
+        guard let identityID else { return }
+        let taskID = UUID()
+        let task = Task { [weak self] in
             guard let self else { return }
+            defer { enqueueTasks[taskID] = nil }
             do {
-                try await outbox.enqueue(makeEvent())
+                try Task.checkCancellation()
+                let event = try makeEvent()
+                try Task.checkCancellation()
+                try await outbox.enqueue(event, for: identityID)
+                try Task.checkCancellation()
+                guard self.identityID == identityID else { return }
+                preparedIdentityID = identityID
                 lastError = nil
-                await refreshPendingCount()
+                await refreshPendingCount(for: identityID)
                 flush()
+            } catch is CancellationError {
+                return
             } catch {
-                record(error)
+                if self.identityID == identityID {
+                    record(error)
+                }
             }
         }
+        enqueueTasks[taskID] = task
     }
 
-    private func performUpload(baseURL: URL, token: String) async {
+    private func performUpload(
+        baseURL: URL,
+        token: String,
+        clientID: String,
+        identityID: String,
+        uploadID: UUID
+    ) async {
         var completedBatch = false
         let backgroundTask = UIApplication.shared.beginBackgroundTask(
             withName: "Publish companion observations"
         ) { [weak self] in
-            self?.uploadTask?.cancel()
+            Task { @MainActor [weak self] in
+                self?.cancelUpload(id: uploadID)
+            }
         }
         defer {
             if backgroundTask != .invalid {
@@ -123,7 +245,7 @@ final class ObservationPublisher {
         }
 
         do {
-            let events = try await outbox.pending()
+            let events = try await outbox.pending(for: identityID)
             if !events.isEmpty {
                 let batch = ObservationBatch(
                     clientID: clientID,
@@ -135,27 +257,37 @@ final class ObservationPublisher {
                 )
                 _ = try await uploader.upload(batch, to: baseURL, token: token)
                 try Task.checkCancellation()
-                try await outbox.removeSent(Set(batch.events.map(\.eventID)))
+                try await outbox.removeSent(Set(batch.events.map(\.eventID)), for: identityID)
                 completedBatch = true
-                lastPublishedAt = Date()
-                lastError = nil
+                if self.identityID == identityID {
+                    lastPublishedAt = Date()
+                    lastError = nil
+                }
                 logger.info("Published \(batch.events.count, privacy: .public) companion observation kinds")
             }
         } catch is CancellationError {
             logger.notice("Observation upload ended when background time expired")
         } catch {
-            record(error)
+            if self.uploadID == uploadID,
+               self.identityID == identityID {
+                record(error)
+            }
         }
 
-        await refreshPendingCount()
+        guard self.uploadID == uploadID else { return }
+        if self.identityID == identityID {
+            await refreshPendingCount(for: identityID)
+        }
         let shouldFlushAgain = flushRequestedWhileBusy || completedBatch
         flushRequestedWhileBusy = false
         uploadTask = nil
+        self.uploadID = nil
         isUploading = false
         if shouldFlushAgain,
            pendingCount > 0,
            self.baseURL != nil,
-           self.token?.isEmpty == false {
+           self.token?.isEmpty == false,
+           self.identityID == identityID {
             // A registration or newer coalesced value requested one more attempt
             // while this batch was in flight. A failure without such a request
             // still stops here rather than creating a retry loop.
@@ -163,12 +295,21 @@ final class ObservationPublisher {
         }
     }
 
-    private func refreshPendingCount() async {
+    private func refreshPendingCount(for identityID: String) async {
         do {
-            pendingCount = try await outbox.pending().count
+            let count = try await outbox.pending(for: identityID).count
+            guard self.identityID == identityID else { return }
+            pendingCount = count
         } catch {
-            record(error)
+            if self.identityID == identityID {
+                record(error)
+            }
         }
+    }
+
+    private func cancelUpload(id: UUID) {
+        guard uploadID == id else { return }
+        uploadTask?.cancel()
     }
 
     private func record(_ error: Error) {

@@ -4,6 +4,8 @@ import Testing
 
 @Suite("Observation outbox")
 struct ObservationOutboxTests {
+    private let identityID = "thane:ed25519:SHA256:primary"
+
     @Test("Latest values coalesce by kind and survive reload")
     func coalescesAndReloads() async throws {
         let fixture = try OutboxFixture()
@@ -13,16 +15,16 @@ struct ObservationOutboxTests {
         let latest = try makeEvent(kind: .location, value: 2)
         let system = try makeEvent(kind: .systemContext, value: 3)
 
-        try await outbox.enqueue(first)
-        try await outbox.enqueue(latest)
-        try await outbox.enqueue(system)
+        try await outbox.enqueue(first, for: identityID)
+        try await outbox.enqueue(latest, for: identityID)
+        try await outbox.enqueue(system, for: identityID)
 
-        let pending = try await outbox.pending()
+        let pending = try await outbox.pending(for: identityID)
         #expect(pending.count == 2)
         #expect(pending.first(where: { $0.kind == .location })?.eventID == latest.eventID)
 
         let restored = ObservationOutbox(fileURL: fixture.fileURL)
-        let restoredPending = try await restored.pending()
+        let restoredPending = try await restored.pending(for: identityID)
         #expect(restoredPending == pending)
     }
 
@@ -34,11 +36,11 @@ struct ObservationOutboxTests {
         let inFlight = try makeEvent(kind: .location, value: 1)
         let replacement = try makeEvent(kind: .location, value: 2)
 
-        try await outbox.enqueue(inFlight)
-        try await outbox.enqueue(replacement)
-        try await outbox.removeSent(Set([inFlight.eventID]))
+        try await outbox.enqueue(inFlight, for: identityID)
+        try await outbox.enqueue(replacement, for: identityID)
+        try await outbox.removeSent(Set([inFlight.eventID]), for: identityID)
 
-        let pending = try await outbox.pending()
+        let pending = try await outbox.pending(for: identityID)
         #expect(pending == [replacement])
     }
 
@@ -50,10 +52,10 @@ struct ObservationOutboxTests {
         let latest = try makeEvent(kind: .location, value: 2)
         let delayed = try makeEvent(kind: .location, value: 1)
 
-        try await outbox.enqueue(latest)
-        try await outbox.enqueue(delayed)
+        try await outbox.enqueue(latest, for: identityID)
+        try await outbox.enqueue(delayed, for: identityID)
 
-        #expect(try await outbox.pending() == [latest])
+        #expect(try await outbox.pending(for: identityID) == [latest])
     }
 
     @Test("Withdrawal wins at an equal observation time")
@@ -79,11 +81,87 @@ struct ObservationOutboxTests {
             payload: try AnyCodable.fromEncodable(TestPayload(value: 2))
         )
 
-        try await outbox.enqueue(available)
-        try await outbox.enqueue(withdrawal)
-        try await outbox.enqueue(available)
+        try await outbox.enqueue(available, for: identityID)
+        try await outbox.enqueue(withdrawal, for: identityID)
+        try await outbox.enqueue(available, for: identityID)
 
-        #expect(try await outbox.pending() == [withdrawal])
+        #expect(try await outbox.pending(for: identityID) == [withdrawal])
+    }
+
+    @Test("A queue cannot be read or written under a different identity")
+    func rejectsIdentityMismatch() async throws {
+        let fixture = try OutboxFixture()
+        defer { fixture.cleanup() }
+        let outbox = ObservationOutbox(fileURL: fixture.fileURL)
+        let event = try makeEvent(kind: .location, value: 1)
+
+        try await outbox.enqueue(event, for: identityID)
+
+        await #expect(throws: ObservationOutboxError.self) {
+            _ = try await outbox.pending(for: "thane:ed25519:SHA256:other")
+        }
+        await #expect(throws: ObservationOutboxError.self) {
+            try await outbox.enqueue(event, for: "thane:ed25519:SHA256:other")
+        }
+    }
+
+    @Test("Legacy unscoped observations are discarded rather than reassigned")
+    func legacyMigrationFailsClosed() async throws {
+        let fixture = try OutboxFixture()
+        defer { fixture.cleanup() }
+        let legacyEvent = try makeEvent(kind: .location, value: 1)
+        let legacyData = try ObservationCoding.encoder().encode([legacyEvent])
+        try legacyData.write(to: fixture.fileURL, options: .atomic)
+
+        let outbox = ObservationOutbox(fileURL: fixture.fileURL)
+        let discardedCount = try await outbox.bind(to: identityID)
+
+        #expect(discardedCount == 1)
+        #expect(try await outbox.pending(for: identityID).isEmpty)
+        let object = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: fixture.fileURL)) as? [String: Any]
+        )
+        #expect(object["identity_id"] as? String == identityID)
+        #expect((object["events"] as? [Any])?.isEmpty == true)
+    }
+
+    @Test("Explicitly discarding a queue allows a new identity without carrying data forward")
+    func discardAllowsIdentitySwitch() async throws {
+        let fixture = try OutboxFixture()
+        defer { fixture.cleanup() }
+        let outbox = ObservationOutbox(fileURL: fixture.fileURL)
+        try await outbox.enqueue(try makeEvent(kind: .location, value: 1), for: identityID)
+
+        try await outbox.discardAll(for: identityID)
+        let newIdentityID = "thane:ed25519:SHA256:other"
+        try await outbox.enqueue(
+            try makeEvent(kind: .systemContext, value: 2),
+            for: newIdentityID
+        )
+
+        let pending = try await outbox.pending(for: newIdentityID)
+        #expect(pending.count == 1)
+        #expect(pending.first?.kind == .systemContext)
+    }
+
+    @Test("Explicit discard removes an unreadable queue during identity recovery")
+    func discardRemovesCorruptQueue() async throws {
+        let fixture = try OutboxFixture()
+        defer { fixture.cleanup() }
+        try Data("not-json".utf8).write(to: fixture.fileURL, options: .atomic)
+        let outbox = ObservationOutbox(fileURL: fixture.fileURL)
+
+        await #expect(throws: ObservationOutboxError.self) {
+            _ = try await outbox.pending(for: identityID)
+        }
+
+        try await outbox.discardAll()
+        #expect(!FileManager.default.fileExists(atPath: fixture.fileURL.path))
+        try await outbox.enqueue(
+            try makeEvent(kind: .location, value: 2),
+            for: identityID
+        )
+        #expect(try await outbox.pending(for: identityID).count == 1)
     }
 
     @Test("Withdrawal tombstones omit sensitive payloads")

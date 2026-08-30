@@ -4,6 +4,7 @@ import SwiftUI
 struct ContextView: View {
     @Environment(AppState.self) private var appState
     @State private var showingIdentity = false
+    @State private var showingPin = false
 
     var body: some View {
         ScrollView {
@@ -23,6 +24,11 @@ struct ContextView: View {
                 IdentityEvidenceView(evidence: evidence)
             }
         }
+        .sheet(isPresented: $showingPin) {
+            if let pin = appState.identityPinning.pin {
+                IdentityPinView(pin: pin)
+            }
+        }
     }
 
     private var recipientCard: some View {
@@ -34,10 +40,10 @@ struct ContextView: View {
                     HStack(spacing: 12) {
                         ThaneIdentityMark(identityID: evidence.instance.id, size: 40)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Shared with \(evidence.instance.name)")
+                            Text(recipientTitle(for: evidence))
                                 .font(.headline)
                                 .foregroundStyle(.primary)
-                            Text("Presented identity · \(evidence.instance.shortFingerprint)")
+                            Text("\(appState.identityStatusLabel) · \(evidence.instance.shortFingerprint)")
                                 .font(.caption.monospaced())
                                 .foregroundStyle(.secondary)
                         }
@@ -47,10 +53,32 @@ struct ContextView: View {
                     }
                 }
                 .buttonStyle(.plain)
+                if !appState.identityContinuity.permitsPrivateDelivery {
+                    Label(
+                        appState.identityContinuity == .mismatch
+                            ? "Sharing blocked by identity mismatch"
+                            : "Sharing waits for an identity pin",
+                        systemImage: appState.identityContinuity == .mismatch
+                            ? "exclamationmark.shield.fill"
+                            : "pin.circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(appState.identityContinuity == .mismatch ? .red : .orange)
+                }
+            } else if let pin = appState.identityPinning.pin {
+                PinnedIdentitySummaryButton(
+                    pin: pin,
+                    status: appState.identityStatusLabel
+                ) {
+                    showingPin = true
+                }
+                Text("Current evidence is unavailable. Live requests and observation uploads remain disabled until the endpoint presents matching identity evidence.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } else {
-                Label("Shared with the configured Thane", systemImage: "lock.shield")
+                Label("No pinned recipient", systemImage: "lock.shield")
                     .font(.headline)
-                Text("Identity evidence will appear here when it is available from the configured endpoint.")
+                Text("Enabled sources are not delivered until you review and pin identity evidence from the configured endpoint.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -130,10 +158,16 @@ struct ContextView: View {
         AppCard {
             Label("Controlled on this iPhone", systemImage: "hand.raised.fill")
                 .font(.headline)
-            Text("Every source defaults off. Thane cannot grant itself access or trigger an Apple permission prompt. Enabled data is sent only through the authenticated companion connection or an approved event-driven upload.")
+            Text("Every source defaults off. Thane cannot grant itself access or trigger an Apple permission prompt. Enabled data is sent only after current evidence matches this iPhone's identity pin, through the authenticated companion connection or an approved event-driven upload.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private func recipientTitle(for evidence: ThaneIdentityEvidence) -> String {
+        appState.identityContinuity.permitsPrivateDelivery
+            ? "Shared with pinned \(evidence.instance.name)"
+            : "Presented by \(evidence.instance.name)"
     }
 
     private var locationPermissionLabel: String {

@@ -10,16 +10,22 @@ struct ObservationPublisherTests {
         let fixture = try PublisherFixture()
         defer { fixture.cleanup() }
         let outbox = ObservationOutbox(fileURL: fixture.fileURL)
+        let identityID = "thane:ed25519:SHA256:primary"
         try await outbox.enqueue(try ObservationEvent.available(
             kind: .systemContext,
             observedAt: Date(),
             payload: PublisherTestPayload(value: 1)
-        ))
+        ), for: identityID)
         let uploader = SequencedObservationUploader()
         let publisher = ObservationPublisher(outbox: outbox, uploader: uploader)
         let baseURL = try #require(URL(string: "https://thane.example"))
 
-        publisher.configure(baseURL: baseURL, token: "token", clientID: "client-id")
+        publisher.configure(
+            baseURL: baseURL,
+            token: "token",
+            clientID: "client-id",
+            identityID: identityID
+        )
         try await waitUntil { uploader.callCount == 1 }
 
         publisher.flush()
@@ -27,8 +33,105 @@ struct ObservationPublisherTests {
 
         try await waitUntil { uploader.callCount == 2 }
         try await waitUntil { publisher.pendingCount == 0 && !publisher.isUploading }
-        #expect(try await outbox.pending().isEmpty)
+        #expect(try await outbox.pending(for: identityID).isEmpty)
         #expect(uploader.callCount == 2)
+    }
+
+    @Test("Changing a verified destination restarts delivery without stranding the scoped queue")
+    func destinationChangeRestartsDelivery() async throws {
+        let fixture = try PublisherFixture()
+        defer { fixture.cleanup() }
+        let outbox = ObservationOutbox(fileURL: fixture.fileURL)
+        let identityID = "thane:ed25519:SHA256:primary"
+        try await outbox.enqueue(try ObservationEvent.available(
+            kind: .location,
+            observedAt: Date(),
+            payload: PublisherTestPayload(value: 1)
+        ), for: identityID)
+        let uploader = SequencedObservationUploader()
+        let publisher = ObservationPublisher(outbox: outbox, uploader: uploader)
+        let firstURL = try #require(URL(string: "https://first.example"))
+        let secondURL = try #require(URL(string: "https://second.example"))
+
+        publisher.configure(
+            baseURL: firstURL,
+            token: "first-token",
+            clientID: "client-id",
+            identityID: identityID
+        )
+        try await waitUntil { uploader.callCount == 1 }
+
+        publisher.configure(baseURL: nil, token: nil, clientID: "", identityID: nil)
+        publisher.configure(
+            baseURL: secondURL,
+            token: "second-token",
+            clientID: "client-id",
+            identityID: identityID
+        )
+
+        try await waitUntil { uploader.callCount == 2 }
+        try await waitUntil { publisher.pendingCount == 0 && !publisher.isUploading }
+        uploader.failFirstUpload()
+        try await Task.sleep(for: .milliseconds(10))
+
+        #expect(uploader.requestedBaseURLs == [firstURL, secondURL])
+        #expect(try await outbox.pending(for: identityID).isEmpty)
+        #expect(publisher.lastError == nil)
+    }
+
+    @Test("A pinned queue records withdrawals while delivery is suspended")
+    func suspendedDeliveryRecordsWithdrawal() async throws {
+        let fixture = try PublisherFixture()
+        defer { fixture.cleanup() }
+        let outbox = ObservationOutbox(fileURL: fixture.fileURL)
+        let identityID = "thane:ed25519:SHA256:primary"
+        let uploader = SequencedObservationUploader()
+        let publisher = ObservationPublisher(outbox: outbox, uploader: uploader)
+
+        publisher.configure(
+            baseURL: nil,
+            token: nil,
+            clientID: "",
+            identityID: identityID
+        )
+        publisher.withdraw(.location)
+
+        try await waitUntil { publisher.pendingCount == 1 }
+        let pending = try await outbox.pending(for: identityID)
+        #expect(pending.count == 1)
+        #expect(pending.first?.kind == .location)
+        #expect(pending.first?.status == .withdrawn)
+        #expect(uploader.callCount == 0)
+    }
+
+    @Test("Forgetting drains pending mutations before deleting the queue")
+    func forgettingDrainsPendingMutations() async throws {
+        let fixture = try PublisherFixture()
+        defer { fixture.cleanup() }
+        let outbox = ObservationOutbox(fileURL: fixture.fileURL)
+        let identityID = "thane:ed25519:SHA256:primary"
+        let publisher = ObservationPublisher(
+            outbox: outbox,
+            uploader: SequencedObservationUploader()
+        )
+
+        publisher.configure(
+            baseURL: nil,
+            token: nil,
+            clientID: "",
+            identityID: identityID
+        )
+        publisher.withdraw(.location)
+        publisher.withdraw(.systemContext)
+
+        try await publisher.discardAllPending()
+        try await Task.sleep(for: .milliseconds(10))
+
+        #expect(!FileManager.default.fileExists(atPath: fixture.fileURL.path))
+        await #expect(throws: ObservationOutboxError.self) {
+            _ = try await outbox.pending(for: identityID)
+        }
+        #expect(publisher.pendingCount == 0)
     }
 
     private func waitUntil(
@@ -45,6 +148,7 @@ struct ObservationPublisherTests {
 @MainActor
 private final class SequencedObservationUploader: ObservationUploading {
     private(set) var callCount = 0
+    private(set) var requestedBaseURLs: [URL] = []
     private var firstContinuation: CheckedContinuation<ObservationIngestResult, Error>?
 
     func upload(
@@ -53,6 +157,7 @@ private final class SequencedObservationUploader: ObservationUploading {
         token: String
     ) async throws -> ObservationIngestResult {
         callCount += 1
+        requestedBaseURLs.append(baseURL)
         if callCount == 1 {
             return try await withCheckedThrowingContinuation { continuation in
                 firstContinuation = continuation

@@ -35,6 +35,26 @@ struct IdentityServiceTests {
         #expect(service.lastError == "Expected identity failure")
     }
 
+    @Test("A failed same-endpoint refresh cannot retain earlier evidence")
+    func sameEndpointFailureClearsEarlierEvidence() async throws {
+        let evidence = try IdentityTestFixture.evidence()
+        let fetcher = StubIdentityFetcher(result: .success(evidence))
+        let service = IdentityService(fetcher: fetcher)
+        let baseURL = try #require(URL(string: "https://thane.example"))
+
+        service.refresh(from: baseURL, token: "first-token")
+        try await waitUntil { !service.isRefreshing }
+        #expect(service.evidence(for: baseURL) == evidence)
+
+        fetcher.result = .failure(IdentityServiceTestError.expected)
+        service.refresh(from: baseURL, token: "replacement-token")
+
+        #expect(service.evidence(for: baseURL) == nil)
+        try await waitUntil { !service.isRefreshing }
+        #expect(service.evidence(for: baseURL) == nil)
+        #expect(service.lastError == "Expected identity failure")
+    }
+
     private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async throws {
         for _ in 0..<100 {
             if condition() { return }
@@ -46,7 +66,7 @@ struct IdentityServiceTests {
 
 @MainActor
 private final class StubIdentityFetcher: IdentityEvidenceFetching {
-    let result: Result<ThaneIdentityEvidence, Error>
+    var result: Result<ThaneIdentityEvidence, Error>
     private(set) var receivedToken: String?
 
     init(result: Result<ThaneIdentityEvidence, Error>) {

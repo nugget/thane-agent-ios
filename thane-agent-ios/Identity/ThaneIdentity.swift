@@ -30,7 +30,7 @@ nonisolated struct ThaneInstanceIdentity: Codable, Equatable, Sendable {
         Self.shortened(identityKey.fingerprint)
     }
 
-    private static func shortened(_ fingerprint: String) -> String {
+    static func shortened(_ fingerprint: String) -> String {
         let value = fingerprint.hasPrefix("SHA256:")
             ? String(fingerprint.dropFirst("SHA256:".count))
             : fingerprint
