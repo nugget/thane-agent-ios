@@ -5,6 +5,21 @@ import Testing
 @Suite("Server connection")
 @MainActor
 struct ServerConnectionTests {
+    @Test("Connection establishment flushes registered follow-up work")
+    func connectionEstablishedCallback() {
+        let connection = ServerConnection()
+        var callbackCount = 0
+        connection.onConnected = {
+            callbackCount += 1
+        }
+
+        connection.handleConnectionEstablished()
+
+        #expect(connection.state == .connected)
+        #expect(connection.lastError == nil)
+        #expect(callbackCount == 1)
+    }
+
     @Test("Authentication failure stops reconnecting and reports the error")
     func authenticationFailureIsTerminal() {
         let connection = ServerConnection()

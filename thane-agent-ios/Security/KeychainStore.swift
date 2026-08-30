@@ -50,7 +50,7 @@ nonisolated enum KeychainStore {
         let lookup = baseQuery(account: account)
         let attributes: [String: Any] = [
             kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
 
         let updateStatus = SecItemUpdate(lookup as CFDictionary, attributes as CFDictionary)

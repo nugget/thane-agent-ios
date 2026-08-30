@@ -11,6 +11,7 @@ final class AppState {
     let connection: ServerConnection
     let platformRouter: PlatformServiceRouter
     let locationService: LocationService
+    let observationPublisher: ObservationPublisher
 
     var tokenInput: String = ""
     private(set) var configurationError: String?
@@ -19,10 +20,12 @@ final class AppState {
 
     init(
         connectionSettings: ConnectionSettings = ConnectionSettings(),
-        sharingPreferences: SharingPreferences = SharingPreferences()
+        sharingPreferences: SharingPreferences = SharingPreferences(),
+        observationPublisher: ObservationPublisher = ObservationPublisher()
     ) {
         self.connectionSettings = connectionSettings
         self.sharingPreferences = sharingPreferences
+        self.observationPublisher = observationPublisher
 
         let connection = ServerConnection()
         let router = PlatformServiceRouter()
@@ -33,6 +36,17 @@ final class AppState {
         platformRouter = router
         systemContextService = systemService
         self.locationService = locationService
+
+        locationService.onSignificantLocation = { [weak observationPublisher] snapshot in
+            observationPublisher?.publishLocation(snapshot)
+        }
+        locationService.onBackgroundLocationUnavailable = { [weak observationPublisher] in
+            observationPublisher?.withdraw(.location)
+        }
+        locationService.restoreBackgroundMonitoringIfAuthorized()
+        systemService.setChangeHandler { [weak self] in
+            self?.publishSystemContextIfEnabled()
+        }
 
         router.register(
             capability: "ios.system-context",
@@ -55,15 +69,27 @@ final class AppState {
             }
             return await router.handle(request: request)
         }
-        connection.onAuthenticationFailure = { [weak connectionSettings] in
+        connection.onConnected = { [weak observationPublisher] in
+            // Observation authentication resolves this client ID through the
+            // durable inventory written by a successful realtime handshake.
+            observationPublisher?.flush()
+        }
+        connection.onAuthenticationFailure = { [weak connectionSettings, weak observationPublisher] in
             connectionSettings?.isEnabled = false
+            observationPublisher?.configure(baseURL: nil, token: nil, clientID: "")
         }
 
         do {
             tokenInput = try connectionSettings.storedToken() ?? ""
+            if !tokenInput.isEmpty {
+                // Re-saving migrates tokens created by older builds to the
+                // after-first-unlock accessibility required for a location wake.
+                try connectionSettings.saveToken(tokenInput)
+            }
         } catch {
             configurationError = error.localizedDescription
         }
+        configureObservationPublisher()
     }
 
     var statusTitle: String {
@@ -93,6 +119,10 @@ final class AppState {
     }
 
     func activate() {
+        locationService.restoreBackgroundMonitoringIfAuthorized()
+        configureObservationPublisher()
+        publishSystemContextIfEnabled()
+        observationPublisher.flush()
         guard connectionSettings.isEnabled,
               connection.state == .disconnected else {
             return
@@ -125,6 +155,11 @@ final class AppState {
         }
 
         connectionSettings.isEnabled = true
+        observationPublisher.configure(
+            baseURL: url,
+            token: token,
+            clientID: connectionSettings.clientID
+        )
         connection.connect(
             url: url,
             token: token,
@@ -135,6 +170,7 @@ final class AppState {
 
     func disconnect() {
         connectionSettings.isEnabled = false
+        observationPublisher.configure(baseURL: nil, token: nil, clientID: "")
         connection.disconnect()
     }
 
@@ -155,10 +191,17 @@ final class AppState {
         sharingPreferences.setEnabled(enabled, for: category)
         if category == .network {
             systemContextService.setNetworkObservationEnabled(enabled)
+        } else if category == .device {
+            systemContextService.setDeviceObservationEnabled(enabled)
         }
+        publishSystemContextIfEnabled(withdrawIfDisabled: true)
     }
 
     func setLocationSharing(enabled: Bool) {
+        if !enabled, sharingPreferences.backgroundLocationEnabled {
+            locationService.setBackgroundMonitoringEnabled(false)
+            observationPublisher.withdraw(.location)
+        }
         sharingPreferences.locationEnabled = enabled
         if enabled {
             locationService.requestWhenInUseAuthorizationIfNeeded()
@@ -167,8 +210,39 @@ final class AppState {
         }
     }
 
+    func setBackgroundLocationSharing(enabled: Bool) {
+        locationService.setBackgroundMonitoringEnabled(enabled)
+        if !enabled {
+            observationPublisher.withdraw(.location)
+        }
+    }
+
     func openIOSSettings() {
         guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
         UIApplication.shared.open(url)
+    }
+
+    private func configureObservationPublisher() {
+        guard connectionSettings.isEnabled else {
+            observationPublisher.configure(baseURL: nil, token: nil, clientID: "")
+            return
+        }
+        observationPublisher.configure(
+            baseURL: connectionSettings.serverURL,
+            token: tokenInput,
+            clientID: connectionSettings.clientID
+        )
+    }
+
+    private func publishSystemContextIfEnabled(withdrawIfDisabled: Bool = false) {
+        do {
+            observationPublisher.publishSystemContext(try systemContextService.snapshot())
+        } catch SystemContextServiceError.noCategoriesEnabled {
+            if withdrawIfDisabled {
+                observationPublisher.withdraw(.systemContext)
+            }
+        } catch {
+            configurationError = error.localizedDescription
+        }
     }
 }

@@ -151,6 +151,131 @@ struct LocationServiceTests {
 
         await expectLocationError("location_unavailable", from: request)
     }
+
+    @Test("Background opt-in requests Always through a service session")
+    func backgroundOptInUsesServiceSession() throws {
+        let fixture = try PreferencesFixture(locationEnabled: true)
+        defer { fixture.cleanup() }
+        let manager = FakeLocationManager(authorizationStatus: .authorizedWhenInUse)
+        let session = FakeAuthorizationSession()
+        let service = LocationService(
+            preferences: fixture.preferences,
+            manager: manager,
+            significantLocationChangeMonitoringAvailable: true,
+            authorizationSessionFactory: { session }
+        )
+
+        service.setBackgroundMonitoringEnabled(true)
+
+        #expect(fixture.preferences.backgroundLocationEnabled)
+        #expect(session.invalidateCount == 0)
+        #expect(manager.startSignificantCount == 0)
+
+        manager.changeAuthorization(to: .authorizedAlways)
+        #expect(manager.startSignificantCount == 1)
+        #expect(service.isBackgroundMonitoringActive)
+    }
+
+    @Test("An authorized relaunch restores significant-change monitoring")
+    func restoresAuthorizedMonitoring() throws {
+        let fixture = try PreferencesFixture(locationEnabled: true, backgroundLocationEnabled: true)
+        defer { fixture.cleanup() }
+        let manager = FakeLocationManager(authorizationStatus: .authorizedAlways)
+        let session = FakeAuthorizationSession()
+
+        let service = LocationService(
+            preferences: fixture.preferences,
+            manager: manager,
+            significantLocationChangeMonitoringAvailable: true,
+            authorizationSessionFactory: { session }
+        )
+
+        #expect(manager.startSignificantCount == 1)
+        #expect(service.isBackgroundMonitoringActive)
+    }
+
+    @Test("Significant changes publish without a pending foreground request")
+    func significantChangeCallback() throws {
+        let fixture = try PreferencesFixture(locationEnabled: true, backgroundLocationEnabled: true)
+        defer { fixture.cleanup() }
+        let manager = FakeLocationManager(authorizationStatus: .authorizedAlways)
+        let service = LocationService(
+            preferences: fixture.preferences,
+            manager: manager,
+            significantLocationChangeMonitoringAvailable: true,
+            authorizationSessionFactory: { FakeAuthorizationSession() }
+        )
+        var snapshots: [LocationSnapshot] = []
+        service.onSignificantLocation = { snapshots.append($0) }
+
+        manager.deliver([makeLocation(verticalAccuracy: 5)])
+
+        #expect(snapshots.count == 1)
+        #expect(snapshots.first?.latitude == 41.88)
+        #expect(manager.requestLocationCount == 0)
+    }
+
+    @Test("Disabling background sharing stops monitoring and invalidates the session")
+    func backgroundDisableStopsMonitoring() throws {
+        let fixture = try PreferencesFixture(locationEnabled: true, backgroundLocationEnabled: true)
+        defer { fixture.cleanup() }
+        let manager = FakeLocationManager(authorizationStatus: .authorizedAlways)
+        let session = FakeAuthorizationSession()
+        let service = LocationService(
+            preferences: fixture.preferences,
+            manager: manager,
+            significantLocationChangeMonitoringAvailable: true,
+            authorizationSessionFactory: { session }
+        )
+
+        service.setBackgroundMonitoringEnabled(false)
+
+        #expect(fixture.preferences.backgroundLocationEnabled == false)
+        #expect(manager.stopSignificantCount == 1)
+        #expect(session.invalidateCount == 1)
+        #expect(service.isBackgroundMonitoringActive == false)
+    }
+
+    @Test("Unsupported significant-change monitoring remains inactive")
+    func unsupportedSignificantChangeMonitoring() throws {
+        let fixture = try PreferencesFixture(locationEnabled: true, backgroundLocationEnabled: true)
+        defer { fixture.cleanup() }
+        let manager = FakeLocationManager(authorizationStatus: .authorizedAlways)
+        let service = LocationService(
+            preferences: fixture.preferences,
+            manager: manager,
+            significantLocationChangeMonitoringAvailable: false,
+            authorizationSessionFactory: { FakeAuthorizationSession() }
+        )
+        var unavailableCount = 0
+        service.onBackgroundLocationUnavailable = { unavailableCount += 1 }
+
+        service.restoreBackgroundMonitoringIfAuthorized()
+
+        #expect(manager.startSignificantCount == 0)
+        #expect(service.isBackgroundMonitoringActive == false)
+        #expect(unavailableCount == 1)
+    }
+
+    @Test("A relaunch with insufficient permission emits one withdrawal hook")
+    func insufficientPermissionWithdraws() throws {
+        let fixture = try PreferencesFixture(locationEnabled: true, backgroundLocationEnabled: true)
+        defer { fixture.cleanup() }
+        let manager = FakeLocationManager(authorizationStatus: .authorizedWhenInUse)
+        let service = LocationService(
+            preferences: fixture.preferences,
+            manager: manager,
+            authorizationSessionFactory: { FakeAuthorizationSession() }
+        )
+        var withdrawalCount = 0
+        service.onBackgroundLocationUnavailable = { withdrawalCount += 1 }
+
+        service.restoreBackgroundMonitoringIfAuthorized()
+        service.restoreBackgroundMonitoringIfAuthorized()
+
+        #expect(withdrawalCount == 1)
+        #expect(manager.startSignificantCount == 0)
+    }
 }
 
 @MainActor
@@ -161,6 +286,8 @@ private final class FakeLocationManager: LocationManaging {
     var accuracyAuthorization: CLAccuracyAuthorization = .fullAccuracy
     private(set) var authorizationRequestCount = 0
     private(set) var requestLocationCount = 0
+    private(set) var startSignificantCount = 0
+    private(set) var stopSignificantCount = 0
 
     private let callbackManager = CLLocationManager()
 
@@ -176,6 +303,19 @@ private final class FakeLocationManager: LocationManaging {
         requestLocationCount += 1
     }
 
+    func startMonitoringSignificantLocationChanges() {
+        startSignificantCount += 1
+    }
+
+    func stopMonitoringSignificantLocationChanges() {
+        stopSignificantCount += 1
+    }
+
+    func changeAuthorization(to status: CLAuthorizationStatus) {
+        authorizationStatus = status
+        delegate?.locationManagerDidChangeAuthorization?(callbackManager)
+    }
+
     func deliver(_ locations: [CLLocation]) {
         delegate?.locationManager?(callbackManager, didUpdateLocations: locations)
     }
@@ -186,16 +326,26 @@ private final class FakeLocationManager: LocationManaging {
 }
 
 @MainActor
+private final class FakeAuthorizationSession: LocationAuthorizationSession {
+    private(set) var invalidateCount = 0
+
+    func invalidate() {
+        invalidateCount += 1
+    }
+}
+
+@MainActor
 private final class PreferencesFixture {
     let preferences: SharingPreferences
     private let defaults: UserDefaults
     private let suite: String
 
-    init(locationEnabled: Bool = false) throws {
+    init(locationEnabled: Bool = false, backgroundLocationEnabled: Bool = false) throws {
         suite = "LocationServiceTests.\(UUID().uuidString)"
         defaults = try #require(UserDefaults(suiteName: suite))
         preferences = SharingPreferences(defaults: defaults)
         preferences.locationEnabled = locationEnabled
+        preferences.backgroundLocationEnabled = backgroundLocationEnabled
     }
 
     func cleanup() {

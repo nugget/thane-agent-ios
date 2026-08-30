@@ -129,6 +129,19 @@ struct RootView: View {
             if appState.sharingPreferences.locationEnabled {
                 Divider()
 
+                Toggle(isOn: Binding(
+                    get: { appState.sharingPreferences.backgroundLocationEnabled },
+                    set: { appState.setBackgroundLocationSharing(enabled: $0) }
+                )) {
+                    preferenceLabel(
+                        title: "Background Location Updates",
+                        detail: "Publishes a latest-value snapshot when iOS reports a significant location change. Requires Always permission and is not continuous tracking."
+                    )
+                }
+                .disabled(appState.locationService.authorizationStatus == .notDetermined)
+
+                Divider()
+
                 HStack {
                     Text("Location Permission")
                     Spacer()
@@ -137,7 +150,17 @@ struct RootView: View {
                         .multilineTextAlignment(.trailing)
                 }
 
-                if locationPermissionNeedsSettings {
+                if appState.sharingPreferences.backgroundLocationEnabled {
+                    HStack {
+                        Text("Background Monitor")
+                        Spacer()
+                        Text(backgroundMonitorLabel)
+                            .foregroundStyle(backgroundMonitorColor)
+                            .multilineTextAlignment(.trailing)
+                    }
+                }
+
+                if locationPermissionNeedsSettings || backgroundPermissionNeedsSettings {
                     Button("Open iOS Settings") {
                         appState.openIOSSettings()
                     }
@@ -146,7 +169,7 @@ struct RootView: View {
                 }
             }
 
-            Text("Every source defaults off. Thane can request enabled data only while this app is active and authenticated.")
+            Text("Every source defaults off. Foreground requests remain live-only; enabled snapshots may also be published over the authenticated Thane connection after an approved iOS event.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -155,11 +178,31 @@ struct RootView: View {
 
     private var availabilitySection: some View {
         section(title: "Availability") {
-            Label("Foreground only", systemImage: "iphone")
-            Text("iOS suspends general-purpose apps in the background. This first version reconnects when active and makes no always-on availability claim.")
+            Label("Foreground requests + event-driven updates", systemImage: "location.fill")
+            Text("The realtime provider disconnects in the background. If Background Location Updates is enabled, Core Location may wake the app for significant changes so it can make a short HTTPS upload. iOS controls delivery and timing; this is not always-on or remotely callable.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
+
+            if appState.observationPublisher.pendingCount > 0 {
+                Label(
+                    "\(appState.observationPublisher.pendingCount) update kind\(appState.observationPublisher.pendingCount == 1 ? "" : "s") waiting to publish",
+                    systemImage: "tray.full"
+                )
+                .font(.caption)
+            }
+
+            if let publishedAt = appState.observationPublisher.lastPublishedAt {
+                Text("Last background-data publish: \(publishedAt.formatted(.relative(presentation: .named)))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let error = appState.observationPublisher.lastError {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
         }
     }
 
@@ -223,6 +266,28 @@ struct RootView: View {
         case .denied, .restricted: true
         default: false
         }
+    }
+
+    private var backgroundPermissionNeedsSettings: Bool {
+        appState.sharingPreferences.backgroundLocationEnabled
+            && appState.locationService.authorizationStatus != .authorizedAlways
+            && appState.locationService.authorizationStatus != .notDetermined
+    }
+
+    private var backgroundMonitorLabel: String {
+        if !appState.locationService.isSignificantLocationChangeMonitoringAvailable {
+            return "Unavailable on this device"
+        }
+        return appState.locationService.isBackgroundMonitoringActive
+            ? "Active"
+            : "Waiting for Always permission"
+    }
+
+    private var backgroundMonitorColor: Color {
+        if !appState.locationService.isSignificantLocationChangeMonitoringAvailable {
+            return .red
+        }
+        return appState.locationService.isBackgroundMonitoringActive ? .green : .orange
     }
 }
 

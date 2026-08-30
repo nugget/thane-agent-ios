@@ -134,6 +134,7 @@ nonisolated struct NetworkContext: Codable, Equatable, Sendable {
 @MainActor
 final class NetworkContextMonitor {
     private(set) var current: NetworkContext?
+    var onChange: (() -> Void)?
 
     private var monitor: NWPathMonitor?
     private let queue = DispatchQueue(label: "info.nugget.thane-agent-ios.network-path")
@@ -144,7 +145,9 @@ final class NetworkContextMonitor {
         monitor.pathUpdateHandler = { [weak self] path in
             let snapshot = NetworkContext(path: path)
             Task { @MainActor [weak self] in
+                guard self?.current != snapshot else { return }
                 self?.current = snapshot
+                self?.onChange?()
             }
         }
         monitor.start(queue: queue)
@@ -181,10 +184,16 @@ nonisolated enum SystemContextServiceError: PlatformServiceError, Sendable {
 
 @MainActor
 final class SystemContextService {
-    private static let timestampFormatter = ISO8601DateFormatter()
+    private static let timestampFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
 
     private let preferences: SharingPreferences
     private let networkMonitor: NetworkContextMonitor
+    private var changeHandler: (() -> Void)?
+    private var notificationTasks: [Task<Void, Never>] = []
 
     init(
         preferences: SharingPreferences,
@@ -192,9 +201,14 @@ final class SystemContextService {
     ) {
         self.preferences = preferences
         self.networkMonitor = networkMonitor
+        networkMonitor.onChange = { [weak self] in
+            self?.emitChange(for: .network)
+        }
         if preferences.networkEnabled {
             networkMonitor.start()
         }
+        UIDevice.current.isBatteryMonitoringEnabled = preferences.deviceEnabled
+        startNotificationObservation()
     }
 
     func setNetworkObservationEnabled(_ enabled: Bool) {
@@ -203,6 +217,14 @@ final class SystemContextService {
         } else {
             networkMonitor.stop()
         }
+    }
+
+    func setDeviceObservationEnabled(_ enabled: Bool) {
+        UIDevice.current.isBatteryMonitoringEnabled = enabled
+    }
+
+    func setChangeHandler(_ handler: @escaping () -> Void) {
+        changeHandler = handler
     }
 
     func snapshot(at date: Date = Date()) throws -> SystemContextSnapshot {
@@ -217,6 +239,30 @@ final class SystemContextService {
             device: enabled.contains(.device) ? Self.deviceContext() : nil,
             network: enabled.contains(.network) ? networkMonitor.current : nil
         )
+    }
+
+    private func startNotificationObservation() {
+        let observations: [(Notification.Name, SystemContextCategory)] = [
+            (Notification.Name("NSSystemTimeZoneDidChangeNotification"), .regional),
+            (Notification.Name("NSCurrentLocaleDidChangeNotification"), .regional),
+            (Notification.Name("NSProcessInfoPowerStateDidChangeNotification"), .device),
+            (ProcessInfo.thermalStateDidChangeNotification, .device),
+            (UIDevice.batteryLevelDidChangeNotification, .device),
+            (UIDevice.batteryStateDidChangeNotification, .device),
+        ]
+        for (name, category) in observations {
+            notificationTasks.append(Task { @MainActor [weak self] in
+                for await _ in NotificationCenter.default.notifications(named: name) {
+                    guard !Task.isCancelled else { return }
+                    self?.emitChange(for: category)
+                }
+            })
+        }
+    }
+
+    private func emitChange(for category: SystemContextCategory) {
+        guard preferences.isEnabled(category) else { return }
+        changeHandler?()
     }
 
     private nonisolated static func regionalContext(at date: Date) -> RegionalContext {

@@ -1,5 +1,6 @@
 import Foundation
 import os
+import UIKit
 
 nonisolated enum WSEndpoint {
     static let realtimePath = "v1/realtime/ws"
@@ -48,6 +49,7 @@ final class ServerConnection {
 
     var registeredCapabilities: [Capability] = []
     var onPlatformRequest: ((PlatformRequest) async -> PlatformResponse)?
+    var onConnected: (() -> Void)?
     var onAuthenticationFailure: (() -> Void)?
 
     private let logger = Logger(
@@ -145,6 +147,9 @@ final class ServerConnection {
                 token: details.token,
                 clientName: details.clientName,
                 clientID: details.clientID,
+                platform: "ios",
+                appVersion: Self.appVersion,
+                osVersion: UIDevice.current.systemVersion,
                 connectionProtocol: WSEndpoint.platformProtocol
             ), attemptID: attemptID)
 
@@ -171,10 +176,7 @@ final class ServerConnection {
             }
 
             try await registerCapabilities(attemptID: attemptID)
-            reconnectAttempt = 0
-            state = .connected
-            lastError = nil
-            logger.info("Connected to Thane")
+            handleConnectionEstablished()
             try await readLoop(attemptID: attemptID)
         } catch is CancellationError {
             return
@@ -267,6 +269,17 @@ final class ServerConnection {
         return nextID
     }
 
+    private nonisolated static var appVersion: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        return switch (version, build) {
+        case let (version?, build?): "\(version) (\(build))"
+        case let (version?, nil): version
+        case let (nil, build?): build
+        case (nil, nil): "unknown"
+        }
+    }
+
     private func sendJSON<T: Encodable>(_ value: T, attemptID: UUID) async throws {
         guard currentAttemptID == attemptID else {
             throw ConnectionError.staleAttempt
@@ -354,6 +367,14 @@ final class ServerConnection {
         providerID = nil
         account = nil
         onAuthenticationFailure?()
+    }
+
+    func handleConnectionEstablished() {
+        reconnectAttempt = 0
+        state = .connected
+        lastError = nil
+        logger.info("Connected to Thane")
+        onConnected?()
     }
 
     private func cleanupTransport(closeCode: URLSessionWebSocketTask.CloseCode) {

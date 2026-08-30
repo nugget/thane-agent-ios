@@ -29,7 +29,7 @@ struct SystemContextTests {
         let service = SystemContextService(preferences: preferences)
 
         let snapshot = try service.snapshot(at: Date(timeIntervalSince1970: 0))
-        #expect(snapshot.capturedAt == "1970-01-01T00:00:00Z")
+        #expect(snapshot.capturedAt == "1970-01-01T00:00:00.000Z")
         #expect(snapshot.regional != nil)
         #expect(snapshot.device == nil)
         #expect(snapshot.network == nil)

@@ -23,12 +23,18 @@ nonisolated struct AuthMessage: Codable, Sendable {
     let token: String
     let clientName: String
     let clientID: String
+    let platform: String
+    let appVersion: String
+    let osVersion: String
     let connectionProtocol: String
 
     enum CodingKeys: String, CodingKey {
         case type, token
         case clientName = "client_name"
         case clientID = "client_id"
+        case platform
+        case appVersion = "app_version"
+        case osVersion = "os_version"
         case connectionProtocol = "protocol"
     }
 }
