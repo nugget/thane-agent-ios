@@ -12,6 +12,7 @@ final class AppState {
     let platformRouter: PlatformServiceRouter
     let locationService: LocationService
     let observationPublisher: ObservationPublisher
+    let identityService: IdentityService
 
     var tokenInput: String = ""
     private(set) var configurationError: String?
@@ -21,11 +22,13 @@ final class AppState {
     init(
         connectionSettings: ConnectionSettings = ConnectionSettings(),
         sharingPreferences: SharingPreferences = SharingPreferences(),
-        observationPublisher: ObservationPublisher = ObservationPublisher()
+        observationPublisher: ObservationPublisher = ObservationPublisher(),
+        identityService: IdentityService = IdentityService()
     ) {
         self.connectionSettings = connectionSettings
         self.sharingPreferences = sharingPreferences
         self.observationPublisher = observationPublisher
+        self.identityService = identityService
 
         let connection = ServerConnection()
         let router = PlatformServiceRouter()
@@ -118,6 +121,15 @@ final class AppState {
         configurationError ?? connection.lastError
     }
 
+    var hasConnectionCredentials: Bool {
+        connectionSettings.serverURL != nil
+            && !tokenInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var presentedIdentity: ThaneIdentityEvidence? {
+        identityService.evidence(for: connectionSettings.serverURL)
+    }
+
     func activate() {
         locationService.restoreBackgroundMonitoringIfAuthorized()
         configureObservationPublisher()
@@ -155,6 +167,7 @@ final class AppState {
         }
 
         connectionSettings.isEnabled = true
+        identityService.refresh(from: url, token: token)
         observationPublisher.configure(
             baseURL: url,
             token: token,
@@ -172,6 +185,20 @@ final class AppState {
         connectionSettings.isEnabled = false
         observationPublisher.configure(baseURL: nil, token: nil, clientID: "")
         connection.disconnect()
+    }
+
+    func refreshIdentity() {
+        configurationError = nil
+        guard let url = connectionSettings.serverURL else {
+            configurationError = "Enter a valid Thane base URL before refreshing identity evidence."
+            return
+        }
+        let token = tokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else {
+            configurationError = "Enter a Thane API token before refreshing identity evidence."
+            return
+        }
+        identityService.refresh(from: url, token: token)
     }
 
     func forgetToken() {
