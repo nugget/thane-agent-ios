@@ -20,6 +20,7 @@ final class ObservationPublisher {
     private var token: String?
     private var clientID = ""
     private var uploadTask: Task<Void, Never>?
+    private var flushRequestedWhileBusy = false
 
     init(
         outbox: ObservationOutbox = ObservationOutbox(),
@@ -76,11 +77,14 @@ final class ObservationPublisher {
     }
 
     func flush() {
-        guard uploadTask == nil,
-              let baseURL,
+        guard let baseURL,
               let token,
               !token.isEmpty,
               !clientID.isEmpty else {
+            return
+        }
+        guard uploadTask == nil else {
+            flushRequestedWhileBusy = true
             return
         }
 
@@ -144,10 +148,17 @@ final class ObservationPublisher {
         }
 
         await refreshPendingCount()
+        let shouldFlushAgain = flushRequestedWhileBusy || completedBatch
+        flushRequestedWhileBusy = false
         uploadTask = nil
         isUploading = false
-        if completedBatch, pendingCount > 0, self.baseURL != nil, self.token?.isEmpty == false {
-            // A newer coalesced value may have arrived while this batch was in flight.
+        if shouldFlushAgain,
+           pendingCount > 0,
+           self.baseURL != nil,
+           self.token?.isEmpty == false {
+            // A registration or newer coalesced value requested one more attempt
+            // while this batch was in flight. A failure without such a request
+            // still stops here rather than creating a retry loop.
             flush()
         }
     }

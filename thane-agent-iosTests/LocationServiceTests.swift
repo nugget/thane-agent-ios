@@ -161,6 +161,7 @@ struct LocationServiceTests {
         let service = LocationService(
             preferences: fixture.preferences,
             manager: manager,
+            significantLocationChangeMonitoringAvailable: true,
             authorizationSessionFactory: { session }
         )
 
@@ -185,6 +186,7 @@ struct LocationServiceTests {
         let service = LocationService(
             preferences: fixture.preferences,
             manager: manager,
+            significantLocationChangeMonitoringAvailable: true,
             authorizationSessionFactory: { session }
         )
 
@@ -200,6 +202,7 @@ struct LocationServiceTests {
         let service = LocationService(
             preferences: fixture.preferences,
             manager: manager,
+            significantLocationChangeMonitoringAvailable: true,
             authorizationSessionFactory: { FakeAuthorizationSession() }
         )
         var snapshots: [LocationSnapshot] = []
@@ -221,6 +224,7 @@ struct LocationServiceTests {
         let service = LocationService(
             preferences: fixture.preferences,
             manager: manager,
+            significantLocationChangeMonitoringAvailable: true,
             authorizationSessionFactory: { session }
         )
 
@@ -230,6 +234,27 @@ struct LocationServiceTests {
         #expect(manager.stopSignificantCount == 1)
         #expect(session.invalidateCount == 1)
         #expect(service.isBackgroundMonitoringActive == false)
+    }
+
+    @Test("Unsupported significant-change monitoring remains inactive")
+    func unsupportedSignificantChangeMonitoring() throws {
+        let fixture = try PreferencesFixture(locationEnabled: true, backgroundLocationEnabled: true)
+        defer { fixture.cleanup() }
+        let manager = FakeLocationManager(authorizationStatus: .authorizedAlways)
+        let service = LocationService(
+            preferences: fixture.preferences,
+            manager: manager,
+            significantLocationChangeMonitoringAvailable: false,
+            authorizationSessionFactory: { FakeAuthorizationSession() }
+        )
+        var unavailableCount = 0
+        service.onBackgroundLocationUnavailable = { unavailableCount += 1 }
+
+        service.restoreBackgroundMonitoringIfAuthorized()
+
+        #expect(manager.startSignificantCount == 0)
+        #expect(service.isBackgroundMonitoringActive == false)
+        #expect(unavailableCount == 1)
     }
 
     @Test("A relaunch with insufficient permission emits one withdrawal hook")

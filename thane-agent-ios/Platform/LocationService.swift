@@ -126,6 +126,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     private var reportedBackgroundUnavailable = false
 
     private(set) var authorizationStatus: CLAuthorizationStatus
+    let isSignificantLocationChangeMonitoringAvailable: Bool
     private(set) var isBackgroundMonitoringActive = false
     var onSignificantLocation: ((LocationSnapshot) -> Void)?
     var onBackgroundLocationUnavailable: (() -> Void)?
@@ -134,6 +135,8 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         preferences: SharingPreferences,
         manager: any LocationManaging = CLLocationManager(),
         requestTimeout: Duration = .seconds(15),
+        significantLocationChangeMonitoringAvailable: Bool = CLLocationManager
+            .significantLocationChangeMonitoringAvailable(),
         authorizationSessionFactory: @escaping @MainActor () -> any LocationAuthorizationSession = {
             CLServiceSession(authorization: .always)
         }
@@ -141,6 +144,7 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         self.preferences = preferences
         self.manager = manager
         self.requestTimeout = requestTimeout
+        isSignificantLocationChangeMonitoringAvailable = significantLocationChangeMonitoringAvailable
         self.authorizationSessionFactory = authorizationSessionFactory
         authorizationStatus = manager.authorizationStatus
         super.init()
@@ -368,6 +372,11 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
         switch authorizationStatus {
         case .authorizedAlways:
+            guard isSignificantLocationChangeMonitoringAvailable else {
+                stopBackgroundMonitoring(invalidateSession: true)
+                reportBackgroundUnavailableIfNeeded()
+                return
+            }
             if authorizationSession == nil {
                 authorizationSession = authorizationSessionFactory()
             }
@@ -399,7 +408,8 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
     private func reportBackgroundUnavailableIfNeeded() {
         guard preferences.backgroundLocationEnabled,
-              authorizationStatus != .authorizedAlways,
+              (authorizationStatus != .authorizedAlways
+                  || !isSignificantLocationChangeMonitoringAvailable),
               !reportedBackgroundUnavailable,
               let onBackgroundLocationUnavailable else {
             return

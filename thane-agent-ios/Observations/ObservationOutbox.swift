@@ -31,9 +31,7 @@ actor ObservationOutbox {
                         loadedEvents[event.kind] = event
                         continue
                     }
-                    if event.observedAt > existing.observedAt
-                        || (event.observedAt == existing.observedAt
-                            && event.eventID.uuidString > existing.eventID.uuidString) {
+                    if Self.shouldReplace(existing, with: event) {
                         loadedEvents[event.kind] = event
                     }
                 }
@@ -49,6 +47,9 @@ actor ObservationOutbox {
     func enqueue(_ event: ObservationEvent) throws {
         try ensureAvailable()
         let previous = eventsByKind[event.kind]
+        if let previous, !Self.shouldReplace(previous, with: event) {
+            return
+        }
         eventsByKind[event.kind] = event
         do {
             try persist()
@@ -94,6 +95,20 @@ actor ObservationOutbox {
         if let initializationError {
             throw initializationError
         }
+    }
+
+    private nonisolated static func shouldReplace(
+        _ existing: ObservationEvent,
+        with candidate: ObservationEvent
+    ) -> Bool {
+        guard candidate.eventID != existing.eventID else { return false }
+        if candidate.observedAt != existing.observedAt {
+            return candidate.observedAt > existing.observedAt
+        }
+        if candidate.status != existing.status {
+            return candidate.status == .withdrawn
+        }
+        return candidate.eventID.uuidString > existing.eventID.uuidString
     }
 
     private nonisolated static func defaultFileURL() throws -> URL {

@@ -154,8 +154,8 @@ struct RootView: View {
                     HStack {
                         Text("Background Monitor")
                         Spacer()
-                        Text(appState.locationService.isBackgroundMonitoringActive ? "Active" : "Waiting for Always permission")
-                            .foregroundStyle(appState.locationService.isBackgroundMonitoringActive ? .green : .orange)
+                        Text(backgroundMonitorLabel)
+                            .foregroundStyle(backgroundMonitorColor)
                             .multilineTextAlignment(.trailing)
                     }
                 }
@@ -272,6 +272,22 @@ struct RootView: View {
         appState.sharingPreferences.backgroundLocationEnabled
             && appState.locationService.authorizationStatus != .authorizedAlways
             && appState.locationService.authorizationStatus != .notDetermined
+    }
+
+    private var backgroundMonitorLabel: String {
+        if !appState.locationService.isSignificantLocationChangeMonitoringAvailable {
+            return "Unavailable on this device"
+        }
+        return appState.locationService.isBackgroundMonitoringActive
+            ? "Active"
+            : "Waiting for Always permission"
+    }
+
+    private var backgroundMonitorColor: Color {
+        if !appState.locationService.isSignificantLocationChangeMonitoringAvailable {
+            return .red
+        }
+        return appState.locationService.isBackgroundMonitoringActive ? .green : .orange
     }
 }
 

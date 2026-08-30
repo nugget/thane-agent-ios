@@ -42,6 +42,50 @@ struct ObservationOutboxTests {
         #expect(pending == [replacement])
     }
 
+    @Test("Delayed older events cannot replace newer queued values")
+    func delayedOlderEventIsIgnored() async throws {
+        let fixture = try OutboxFixture()
+        defer { fixture.cleanup() }
+        let outbox = ObservationOutbox(fileURL: fixture.fileURL)
+        let latest = try makeEvent(kind: .location, value: 2)
+        let delayed = try makeEvent(kind: .location, value: 1)
+
+        try await outbox.enqueue(latest)
+        try await outbox.enqueue(delayed)
+
+        #expect(try await outbox.pending() == [latest])
+    }
+
+    @Test("Withdrawal wins at an equal observation time")
+    func equalTimeWithdrawalDominates() async throws {
+        let fixture = try OutboxFixture()
+        defer { fixture.cleanup() }
+        let outbox = ObservationOutbox(fileURL: fixture.fileURL)
+        let observedAt = Date(timeIntervalSince1970: 2)
+        let withdrawal = ObservationEvent(
+            eventID: try #require(UUID(uuidString: "11111111-1111-4111-8111-111111111111")),
+            kind: .location,
+            schemaVersion: 1,
+            status: .withdrawn,
+            observedAt: observedAt,
+            payload: nil
+        )
+        let available = ObservationEvent(
+            eventID: try #require(UUID(uuidString: "FFFFFFFF-FFFF-4FFF-BFFF-FFFFFFFFFFFF")),
+            kind: .location,
+            schemaVersion: 1,
+            status: .available,
+            observedAt: observedAt,
+            payload: try AnyCodable.fromEncodable(TestPayload(value: 2))
+        )
+
+        try await outbox.enqueue(available)
+        try await outbox.enqueue(withdrawal)
+        try await outbox.enqueue(available)
+
+        #expect(try await outbox.pending() == [withdrawal])
+    }
+
     @Test("Withdrawal tombstones omit sensitive payloads")
     func withdrawalOmitsPayload() throws {
         let event = ObservationEvent.withdrawn(kind: .location)
