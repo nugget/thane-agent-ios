@@ -25,6 +25,19 @@ with iOS file protection, and removed only after Thane accepts them. The app
 does not continuously track location or claim persistent background
 availability; its realtime tools remain foreground-only.
 
+The adaptive app shell separates routine operation from configuration:
+
+- **Thane** shows the presented cryptographic identity, live/background
+  availability, and observation-delivery state.
+- **Context** owns local disclosure choices and Apple permission state.
+- **Settings** owns credentials, connection controls, and diagnostics.
+
+The app reads authenticated `GET /v1/identity` evidence from the configured
+Thane and exposes its stable identifier, public fingerprints, core revisions,
+anchor posture, and local verification results. This first identity surface is
+deliberately presentation-only: it does not yet pin the identity or turn the
+server's evidence into an independent trust verdict.
+
 API tokens are stored in Keychain. Remote servers must use HTTPS; plaintext is
 accepted only for simulator-friendly loopback development. TLS verification is
 never disabled.
@@ -69,3 +82,8 @@ authorized integrations such as Calendar, Contacts, Reminders, HealthKit,
 Motion & Fitness, Photos, HomeKit, and Focus status. Each should land as a
 focused capability with bounded queries and clear field-level disclosure; they
 should not be bundled behind a single broad consent switch.
+
+The broader identity-first product arc is tracked in
+[roadmap issue #8](https://github.com/nugget/thane-agent-ios/issues/8), including
+identity continuity, typed URL handling, notifications and inbox, and a
+protocol-neutral conversation surface.
