@@ -47,7 +47,10 @@ struct ServerConnectionTests {
         settings.isEnabled = true
         let appState = AppState(
             connectionSettings: settings,
-            sharingPreferences: SharingPreferences(defaults: defaults)
+            sharingPreferences: SharingPreferences(defaults: defaults),
+            identityPinning: IdentityPinningService(
+                secureStore: AuthenticationCredentialStore()
+            )
         )
 
         appState.connection.handleAuthenticationFailure("Expired token")

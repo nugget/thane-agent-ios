@@ -35,6 +35,7 @@ struct ThaneIdentityMark: View {
 
 struct IdentitySummaryButton: View {
     let evidence: ThaneIdentityEvidence
+    var status: String = "Presented identity"
     let action: () -> Void
 
     var body: some View {
@@ -49,7 +50,7 @@ struct IdentitySummaryButton: View {
                     Text(evidence.instance.shortFingerprint)
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
-                    Text("Presented identity")
+                    Text(status)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -63,14 +64,117 @@ struct IdentitySummaryButton: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(
-            "Presented Thane identity \(evidence.instance.name), fingerprint \(evidence.instance.shortFingerprint)"
+            "Thane identity \(evidence.instance.name), fingerprint \(evidence.instance.shortFingerprint), \(status)"
         )
         .accessibilityHint("Shows cryptographic identity and core evidence")
     }
 }
 
+struct PinnedIdentitySummary: View {
+    let pin: ThaneIdentityPin
+    let status: String
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ThaneIdentityMark(identityID: pin.identityID)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(pin.nameAtPinning)
+                    .font(.title3.weight(.semibold))
+                Text(pin.shortFingerprint)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "Pinned Thane identity \(pin.nameAtPinning), fingerprint \(pin.shortFingerprint), \(status)"
+        )
+    }
+}
+
+struct PinnedIdentitySummaryButton: View {
+    let pin: ThaneIdentityPin
+    let status: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack {
+                PinnedIdentitySummary(pin: pin, status: status)
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Shows the identity pinned on this iPhone")
+    }
+}
+
+struct IdentityPinView: View {
+    let pin: ThaneIdentityPin
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    VStack(spacing: 12) {
+                        ThaneIdentityMark(identityID: pin.identityID, size: 84)
+                        Text(pin.nameAtPinning)
+                            .font(.title2.weight(.semibold))
+                        Text(pin.shortFingerprint)
+                            .font(.subheadline.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+
+                    Text("This is the identity material recorded in this iPhone's protected Keychain. Matching does not independently prove who operates the Thane.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Pinned stable identity") {
+                    EvidenceValueRow(label: "Instance ID", value: pin.identityID)
+                    EvidenceValueRow(
+                        label: "Signing key · \(pin.identityKey.algorithm)",
+                        value: pin.identityKey.fingerprint
+                    )
+                    EvidenceValueRow(
+                        label: "Channel CA · \(pin.channelCA.algorithm)",
+                        value: pin.channelCA.fingerprint
+                    )
+                }
+
+                Section {
+                    LabeledContent(
+                        "Pinned on this iPhone",
+                        value: pin.pinnedAt.formatted(date: .abbreviated, time: .standard)
+                    )
+                    LabeledContent("Pin schema", value: pin.schemaVersion.formatted())
+                }
+            }
+            .navigationTitle("Pinned Thane")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
 struct IdentityEvidenceView: View {
     let evidence: ThaneIdentityEvidence
+    @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -88,8 +192,42 @@ struct IdentityEvidenceView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 8)
 
-                    Text("This identity was presented by the configured endpoint. It has not yet been pinned or independently verified by this iPhone.")
+                    Text(continuityExplanation)
                         .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Continuity on this iPhone") {
+                    Label(continuityTitle, systemImage: continuitySymbol)
+                        .foregroundStyle(continuityColor)
+
+                    if appState.identityContinuity == .presented {
+                        Button("Pin This Thane & Connect") {
+                            appState.pinPresentedIdentity()
+                            if appState.identityContinuity.permitsPrivateDelivery {
+                                dismiss()
+                            }
+                        }
+                    } else if let pin = appState.identityPinning.pin {
+                        LabeledContent(
+                            "Pinned on this iPhone",
+                            value: pin.pinnedAt.formatted(date: .abbreviated, time: .shortened)
+                        )
+                        if appState.identityContinuity == .mismatch {
+                            EvidenceValueRow(label: "Pinned instance ID", value: pin.identityID)
+                            EvidenceValueRow(
+                                label: "Pinned signing key · \(pin.identityKey.algorithm)",
+                                value: pin.identityKey.fingerprint
+                            )
+                            EvidenceValueRow(
+                                label: "Pinned channel CA · \(pin.channelCA.algorithm)",
+                                value: pin.channelCA.fingerprint
+                            )
+                        }
+                    }
+
+                    Text("A pin records the stable instance ID, signing-key fingerprint, and channel-CA fingerprint in this iPhone's protected Keychain. It does not independently prove who operates the Thane.")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
@@ -140,7 +278,7 @@ struct IdentityEvidenceView: View {
                     )
                 }
 
-                Section("Local verification") {
+                Section("Reported core verification") {
                     VerificationRow(title: "Birth admission", check: evidence.core.verification.admission)
                     VerificationRow(title: "Current HEAD", check: evidence.core.verification.head)
 
@@ -172,6 +310,49 @@ struct IdentityEvidenceView: View {
         case "operator": "Operator-anchored declaration"
         case "self_signed": "Self-signed declaration"
         default: "Unknown declaration"
+        }
+    }
+
+    private var continuityTitle: String {
+        switch appState.identityContinuity {
+        case .notPinned, .presented: "Presented, not pinned"
+        case .matching: "Pinned identity matches"
+        case .stale: "Pinned identity matches; evidence is stale"
+        case .unavailable: "Current evidence unavailable"
+        case .mismatch: "Identity mismatch; private delivery blocked"
+        }
+    }
+
+    private var continuityExplanation: String {
+        switch appState.identityContinuity {
+        case .notPinned, .presented:
+            "This identity was presented by the configured endpoint. Review the exact evidence before choosing to pin it on this iPhone."
+        case .matching:
+            "The stable instance ID, signing key, and channel CA exactly match this iPhone's pin."
+        case .stale:
+            "The stable identity matches this iPhone's pin, but the evidence snapshot is older than 15 minutes."
+        case .unavailable:
+            "This iPhone has a pin, but current identity evidence is unavailable. Private delivery remains disabled until evidence can be compared."
+        case .mismatch:
+            "The configured endpoint presented different stable identity material. Live requests and observation uploads are blocked."
+        }
+    }
+
+    private var continuitySymbol: String {
+        switch appState.identityContinuity {
+        case .matching: "checkmark.shield.fill"
+        case .stale: "clock.badge.exclamationmark"
+        case .mismatch: "exclamationmark.shield.fill"
+        case .unavailable: "questionmark.diamond"
+        case .notPinned, .presented: "pin.circle"
+        }
+    }
+
+    private var continuityColor: Color {
+        switch appState.identityContinuity {
+        case .matching: .green
+        case .stale, .notPinned, .presented, .unavailable: .orange
+        case .mismatch: .red
         }
     }
 }

@@ -2,30 +2,83 @@ import Foundation
 
 nonisolated enum ObservationOutboxError: LocalizedError, Sendable {
     case unavailable(String)
+    case identityRequired
+    case identityMismatch
 
     var errorDescription: String? {
         switch self {
         case .unavailable(let message):
             "Observation queue unavailable: \(message)"
+        case .identityRequired:
+            "Observation queue requires a pinned Thane identity."
+        case .identityMismatch:
+            "Observation queue belongs to a different Thane identity."
         }
+    }
+}
+
+private nonisolated struct ObservationOutboxEnvelope: Codable {
+    static let currentSchemaVersion = 1
+
+    let schemaVersion: Int
+    let identityID: String
+    let events: [ObservationEvent]
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case identityID = "identity_id"
+        case events
     }
 }
 
 actor ObservationOutbox {
     private let fileURL: URL
+    private let storageURLResolved: Bool
+    private var identityID: String?
     private var eventsByKind: [ObservationKind: ObservationEvent] = [:]
     private var initializationError: ObservationOutboxError?
+    private var legacyEventCount = 0
 
     init(fileURL: URL? = nil) {
         var resolvedURL = fileURL ?? URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("thane-observations-unavailable.json")
+        var loadedIdentityID: String?
         var loadedEvents: [ObservationKind: ObservationEvent] = [:]
         var loadError: ObservationOutboxError?
+        var loadedLegacyEventCount = 0
+        var didResolveStorageURL = false
         do {
             resolvedURL = try fileURL ?? Self.defaultFileURL()
+            didResolveStorageURL = true
             if FileManager.default.fileExists(atPath: resolvedURL.path) {
                 let data = try Data(contentsOf: resolvedURL)
-                let events = try ObservationCoding.decoder().decode([ObservationEvent].self, from: data)
+                let events: [ObservationEvent]
+                do {
+                    let envelope = try ObservationCoding.decoder().decode(
+                        ObservationOutboxEnvelope.self,
+                        from: data
+                    )
+                    guard envelope.schemaVersion == ObservationOutboxEnvelope.currentSchemaVersion,
+                          !envelope.identityID.isEmpty else {
+                        throw ObservationOutboxError.unavailable(
+                            "The saved queue uses an unsupported storage schema."
+                        )
+                    }
+                    loadedIdentityID = envelope.identityID
+                    events = envelope.events
+                } catch let error as ObservationOutboxError {
+                    throw error
+                } catch {
+                    // Version 1 of the app stored a bare event array without a
+                    // recipient. Those events cannot safely be assigned to a
+                    // newly pinned identity, so remember only the discard count.
+                    let legacyEvents = try ObservationCoding.decoder().decode(
+                        [ObservationEvent].self,
+                        from: data
+                    )
+                    loadedLegacyEventCount = legacyEvents.count
+                    events = []
+                }
                 for event in events {
                     guard let existing = loadedEvents[event.kind] else {
                         loadedEvents[event.kind] = event
@@ -36,16 +89,46 @@ actor ObservationOutbox {
                     }
                 }
             }
+        } catch let error as ObservationOutboxError {
+            loadError = error
         } catch {
             loadError = .unavailable(error.localizedDescription)
         }
         self.fileURL = resolvedURL
+        storageURLResolved = didResolveStorageURL
+        identityID = loadedIdentityID
         eventsByKind = loadedEvents
         initializationError = loadError
+        legacyEventCount = loadedLegacyEventCount
     }
 
-    func enqueue(_ event: ObservationEvent) throws {
+    @discardableResult
+    func bind(to identityID: String) throws -> Int {
         try ensureAvailable()
+        guard !identityID.isEmpty else { throw ObservationOutboxError.identityRequired }
+        if let existingIdentityID = self.identityID {
+            guard existingIdentityID == identityID else {
+                throw ObservationOutboxError.identityMismatch
+            }
+            return 0
+        }
+
+        let discardedCount = legacyEventCount
+        let previousIdentityID = self.identityID
+        self.identityID = identityID
+        legacyEventCount = 0
+        do {
+            try persist()
+        } catch {
+            self.identityID = previousIdentityID
+            legacyEventCount = discardedCount
+            throw error
+        }
+        return discardedCount
+    }
+
+    func enqueue(_ event: ObservationEvent, for identityID: String) throws {
+        try bind(to: identityID)
         let previous = eventsByKind[event.kind]
         if let previous, !Self.shouldReplace(previous, with: event) {
             return
@@ -59,13 +142,15 @@ actor ObservationOutbox {
         }
     }
 
-    func pending() throws -> [ObservationEvent] {
+    func pending(for identityID: String) throws -> [ObservationEvent] {
         try ensureAvailable()
+        try requireIdentity(identityID)
         return eventsByKind.values.sorted { $0.kind.rawValue < $1.kind.rawValue }
     }
 
-    func removeSent(_ eventIDs: Set<UUID>) throws {
+    func removeSent(_ eventIDs: Set<UUID>, for identityID: String) throws {
         try ensureAvailable()
+        try requireIdentity(identityID)
         let previous = eventsByKind
         eventsByKind = eventsByKind.filter { !eventIDs.contains($0.value.eventID) }
         do {
@@ -76,15 +161,51 @@ actor ObservationOutbox {
         }
     }
 
+    func discardAll(for identityID: String) throws {
+        try ensureAvailable()
+        if let existingIdentityID = self.identityID,
+           existingIdentityID != identityID {
+            throw ObservationOutboxError.identityMismatch
+        }
+
+        try discardAll()
+    }
+
+    func discardAll() throws {
+        let previousIdentityID = self.identityID
+        let previousEvents = eventsByKind
+        let previousLegacyEventCount = legacyEventCount
+        self.identityID = nil
+        eventsByKind = [:]
+        legacyEventCount = 0
+        do {
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                try FileManager.default.removeItem(at: fileURL)
+            }
+            if storageURLResolved {
+                initializationError = nil
+            }
+        } catch {
+            self.identityID = previousIdentityID
+            eventsByKind = previousEvents
+            legacyEventCount = previousLegacyEventCount
+            throw error
+        }
+    }
+
     private func persist() throws {
         let directory = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(
             at: directory,
             withIntermediateDirectories: true
         )
-        let data = try ObservationCoding.encoder().encode(
-            eventsByKind.values.sorted { $0.kind.rawValue < $1.kind.rawValue }
+        guard let identityID else { throw ObservationOutboxError.identityRequired }
+        let envelope = ObservationOutboxEnvelope(
+            schemaVersion: ObservationOutboxEnvelope.currentSchemaVersion,
+            identityID: identityID,
+            events: eventsByKind.values.sorted { $0.kind.rawValue < $1.kind.rawValue }
         )
+        let data = try ObservationCoding.encoder().encode(envelope)
         try data.write(
             to: fileURL,
             options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
@@ -94,6 +215,15 @@ actor ObservationOutbox {
     private func ensureAvailable() throws {
         if let initializationError {
             throw initializationError
+        }
+    }
+
+    private func requireIdentity(_ identityID: String) throws {
+        guard let existingIdentityID = self.identityID else {
+            throw ObservationOutboxError.identityRequired
+        }
+        guard existingIdentityID == identityID else {
+            throw ObservationOutboxError.identityMismatch
         }
     }
 

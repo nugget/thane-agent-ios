@@ -19,7 +19,10 @@ struct ConnectionSettingsTests {
         let preferences = SharingPreferences(defaults: defaults)
         let appState = AppState(
             connectionSettings: settings,
-            sharingPreferences: preferences
+            sharingPreferences: preferences,
+            identityPinning: IdentityPinningService(
+                secureStore: FakeCredentialStore(value: nil)
+            )
         )
 
         #expect(appState.tokenInput == "secret")

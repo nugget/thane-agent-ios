@@ -3,14 +3,26 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(AppState.self) private var appState
     @State private var showingForgetConfirmation = false
+    @State private var showingForgetThaneConfirmation = false
     @State private var showingIdentity = false
+    @State private var showingPin = false
 
     var body: some View {
         Form {
             Section("Identity & Connection") {
                 if let evidence = appState.presentedIdentity {
-                    IdentitySummaryButton(evidence: evidence) {
+                    IdentitySummaryButton(
+                        evidence: evidence,
+                        status: appState.identityStatusLabel
+                    ) {
                         showingIdentity = true
+                    }
+                } else if let pin = appState.identityPinning.pin {
+                    PinnedIdentitySummaryButton(
+                        pin: pin,
+                        status: appState.identityStatusLabel
+                    ) {
+                        showingPin = true
                     }
                 }
 
@@ -66,7 +78,7 @@ struct SettingsView: View {
                         appState.disconnect()
                     }
                 } else {
-                    Button("Connect") {
+                    Button(appState.identityPinning.pin == nil ? "Check Identity" : "Connect") {
                         appState.connectUsingCurrentValues()
                     }
                     .disabled(!appState.hasConnectionCredentials)
@@ -76,8 +88,14 @@ struct SettingsView: View {
                     showingForgetConfirmation = true
                 }
                 .disabled(appState.tokenInput.isEmpty)
+
+                if appState.identityPinning.pin != nil || appState.identityPinning.lastError != nil {
+                    Button("Forget This Thane", role: .destructive) {
+                        showingForgetThaneConfirmation = true
+                    }
+                }
             } footer: {
-                Text("The API token is stored in Keychain. Remote servers must use HTTPS, and TLS verification is never disabled. Disconnecting pauses automatic connection and uploads until you connect again.")
+                Text("The API token and identity pin are stored in this iPhone's protected Keychain. Remote servers must use HTTPS, and TLS verification is never disabled. Private delivery starts only after current evidence matches the pin.")
             }
 
             Section("Companion") {
@@ -95,6 +113,11 @@ struct SettingsView: View {
                 IdentityEvidenceView(evidence: evidence)
             }
         }
+        .sheet(isPresented: $showingPin) {
+            if let pin = appState.identityPinning.pin {
+                IdentityPinView(pin: pin)
+            }
+        }
         .confirmationDialog(
             "Forget this API token?",
             isPresented: $showingForgetConfirmation,
@@ -105,6 +128,17 @@ struct SettingsView: View {
             }
         } message: {
             Text("The app will disconnect and remove the credential from Keychain. Your local sharing choices are unchanged.")
+        }
+        .confirmationDialog(
+            "Forget this Thane?",
+            isPresented: $showingForgetThaneConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Forget This Thane", role: .destructive) {
+                Task { await appState.forgetThane() }
+            }
+        } message: {
+            Text("The app will disconnect, remove the identity pin, and permanently discard observations queued for this Thane. The API token and local sharing choices are unchanged.")
         }
     }
 
