@@ -11,6 +11,9 @@ struct ProtocolTypesTests {
             token: "secret",
             clientName: "Thane for iOS",
             clientID: "client-id",
+            platform: "ios",
+            appVersion: "0.1.0 (1)",
+            osVersion: "26.6",
             connectionProtocol: WSEndpoint.platformProtocol
         ))
         let object = try #require(
@@ -20,6 +23,9 @@ struct ProtocolTypesTests {
         #expect(object["protocol"] == "platform")
         #expect(object["client_name"] == "Thane for iOS")
         #expect(object["client_id"] == "client-id")
+        #expect(object["platform"] == "ios")
+        #expect(object["app_version"] == "0.1.0 (1)")
+        #expect(object["os_version"] == "26.6")
     }
 
     @Test("Tool definitions preserve their exact JSON Schema")

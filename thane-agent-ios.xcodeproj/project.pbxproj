@@ -21,9 +21,22 @@
 		A10000000000000000000031 /* thane-agent-iosTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "thane-agent-iosTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		A10000000000000000000042 /* Exceptions for thane-agent-ios in thane-agent-ios target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = A10000000000000000000020 /* thane-agent-ios */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		A10000000000000000000040 /* thane-agent-ios */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				A10000000000000000000042 /* Exceptions for thane-agent-ios in thane-agent-ios target */,
+			);
 			path = "thane-agent-ios";
 			sourceTree = "<group>";
 		};
@@ -330,9 +343,11 @@
 				DEVELOPMENT_TEAM = 9KR5L363XM;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "thane-agent-ios/Info.plist";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Thane connects to an operator-configured agent that may run on the local network.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Thane shares a one-time location with your connected agent only when you enable Location sharing.";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Thane can publish significant location changes to your connected agent in the background only when you enable Background Location Updates.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Thane shares a location with your connected agent only when you enable Location sharing.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -367,9 +382,11 @@
 				DEVELOPMENT_TEAM = 9KR5L363XM;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "thane-agent-ios/Info.plist";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Thane connects to an operator-configured agent that may run on the local network.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Thane shares a one-time location with your connected agent only when you enable Location sharing.";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Thane can publish significant location changes to your connected agent in the background only when you enable Background Location Updates.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Thane shares a location with your connected agent only when you enable Location sharing.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

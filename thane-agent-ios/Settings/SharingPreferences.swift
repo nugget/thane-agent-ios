@@ -45,13 +45,19 @@ final class SharingPreferences {
     var locationEnabled: Bool {
         didSet { persist(locationEnabled, key: "location") }
     }
+    var backgroundLocationEnabled: Bool {
+        didSet { persist(backgroundLocationEnabled, key: "background-location") }
+    }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         regionalEnabled = defaults.bool(forKey: Self.key(SystemContextCategory.regional.rawValue))
         deviceEnabled = defaults.bool(forKey: Self.key(SystemContextCategory.device.rawValue))
         networkEnabled = defaults.bool(forKey: Self.key(SystemContextCategory.network.rawValue))
-        locationEnabled = defaults.bool(forKey: Self.key("location"))
+        let storedLocationEnabled = defaults.bool(forKey: Self.key("location"))
+        locationEnabled = storedLocationEnabled
+        backgroundLocationEnabled = storedLocationEnabled
+            && defaults.bool(forKey: Self.key("background-location"))
     }
 
     var enabledSystemCategories: Set<SystemContextCategory> {

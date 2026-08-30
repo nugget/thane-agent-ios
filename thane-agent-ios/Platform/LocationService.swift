@@ -10,9 +10,18 @@ protocol LocationManaging: AnyObject {
 
     func requestWhenInUseAuthorization()
     func requestLocation()
+    func startMonitoringSignificantLocationChanges()
+    func stopMonitoringSignificantLocationChanges()
 }
 
 extension CLLocationManager: LocationManaging {}
+
+@MainActor
+protocol LocationAuthorizationSession: AnyObject {
+    func invalidate()
+}
+
+extension CLServiceSession: LocationAuthorizationSession {}
 
 nonisolated struct LocationSnapshot: Codable, Equatable, Sendable {
     let capturedAt: String
@@ -101,29 +110,43 @@ nonisolated enum LocationServiceError: PlatformServiceError, Sendable {
 @Observable
 @MainActor
 final class LocationService: NSObject, CLLocationManagerDelegate {
-    private static let timestampFormatter = ISO8601DateFormatter()
+    private static let timestampFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
 
     private let manager: any LocationManaging
     private let preferences: SharingPreferences
     private let requestTimeout: Duration
+    private let authorizationSessionFactory: @MainActor () -> any LocationAuthorizationSession
     private var pendingContinuation: CheckedContinuation<LocationSnapshot, Error>?
     private var timeoutTask: Task<Void, Never>?
+    private var authorizationSession: (any LocationAuthorizationSession)?
+    private var reportedBackgroundUnavailable = false
+
+    private(set) var authorizationStatus: CLAuthorizationStatus
+    private(set) var isBackgroundMonitoringActive = false
+    var onSignificantLocation: ((LocationSnapshot) -> Void)?
+    var onBackgroundLocationUnavailable: (() -> Void)?
 
     init(
         preferences: SharingPreferences,
         manager: any LocationManaging = CLLocationManager(),
-        requestTimeout: Duration = .seconds(15)
+        requestTimeout: Duration = .seconds(15),
+        authorizationSessionFactory: @escaping @MainActor () -> any LocationAuthorizationSession = {
+            CLServiceSession(authorization: .always)
+        }
     ) {
         self.preferences = preferences
         self.manager = manager
         self.requestTimeout = requestTimeout
+        self.authorizationSessionFactory = authorizationSessionFactory
+        authorizationStatus = manager.authorizationStatus
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBest
-    }
-
-    var authorizationStatus: CLAuthorizationStatus {
-        manager.authorizationStatus
+        restoreBackgroundMonitoringIfAuthorized()
     }
 
     var authorizationLabel: String {
@@ -147,6 +170,41 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
             return
         }
         manager.requestWhenInUseAuthorization()
+    }
+
+    /// Called from the local background-sharing toggle. Creating an Always
+    /// service session here lets iOS present any authorization upgrade while
+    /// the operator is visibly using the app; a remote request never does so.
+    func setBackgroundMonitoringEnabled(_ enabled: Bool) {
+        authorizationStatus = manager.authorizationStatus
+        preferences.backgroundLocationEnabled = enabled
+        if enabled {
+            guard preferences.locationEnabled else {
+                preferences.backgroundLocationEnabled = false
+                return
+            }
+            reconcileBackgroundMonitoring(allowAuthorizationRequest: true)
+            reportBackgroundUnavailableIfNeeded()
+        } else {
+            reportedBackgroundUnavailable = false
+            stopBackgroundMonitoring(invalidateSession: true)
+        }
+    }
+
+    /// Re-establishes only an already-authorized session. This is safe during
+    /// a Core Location background relaunch because it cannot originate a new
+    /// permission prompt.
+    func restoreBackgroundMonitoringIfAuthorized() {
+        authorizationStatus = manager.authorizationStatus
+        guard preferences.locationEnabled, preferences.backgroundLocationEnabled else {
+            return
+        }
+        guard authorizationStatus == .authorizedAlways else {
+            stopBackgroundMonitoring(invalidateSession: false)
+            reportBackgroundUnavailableIfNeeded()
+            return
+        }
+        reconcileBackgroundMonitoring(allowAuthorizationRequest: false)
     }
 
     func currentLocation() async throws -> LocationSnapshot {
@@ -179,6 +237,8 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
     func cancelPendingRequestAfterConsentRevocation() {
         guard !preferences.locationEnabled else { return }
+        preferences.backgroundLocationEnabled = false
+        stopBackgroundMonitoring(invalidateSession: true)
         finish(throwing: LocationServiceError.sharingDisabled)
     }
 
@@ -200,10 +260,32 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
             return
         }
 
+        let snapshot = Self.snapshot(
+            from: location,
+            capturedAt: Date(),
+            authorization: authorizationStatus,
+            accuracyAuthorization: manager.accuracyAuthorization
+        )
+        if preferences.backgroundLocationEnabled,
+           authorizationStatus == .authorizedAlways {
+            reportedBackgroundUnavailable = false
+            onSignificantLocation?(snapshot)
+        }
+        if pendingContinuation != nil {
+            finish(returning: snapshot)
+        }
+    }
+
+    private static func snapshot(
+        from location: CLLocation,
+        capturedAt: Date,
+        authorization: CLAuthorizationStatus,
+        accuracyAuthorization: CLAccuracyAuthorization
+    ) -> LocationSnapshot {
         let source = location.sourceInformation
         let hasValidAltitude = location.verticalAccuracy >= 0
-        finish(returning: LocationSnapshot(
-            capturedAt: Self.timestampFormatter.string(from: Date()),
+        return LocationSnapshot(
+            capturedAt: Self.timestampFormatter.string(from: capturedAt),
             locationTimestamp: Self.timestampFormatter.string(from: location.timestamp),
             latitude: location.coordinate.latitude,
             longitude: location.coordinate.longitude,
@@ -216,11 +298,11 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
             courseDegrees: location.course >= 0 ? location.course : nil,
             courseAccuracyDegrees: location.courseAccuracy >= 0 ? location.courseAccuracy : nil,
             floor: location.floor?.level,
-            authorization: Self.authorizationLabel(authorizationStatus),
-            accuracyAuthorization: Self.accuracyLabel(manager.accuracyAuthorization),
+            authorization: Self.authorizationLabel(authorization),
+            accuracyAuthorization: Self.accuracyLabel(accuracyAuthorization),
             simulatedBySoftware: source?.isSimulatedBySoftware,
             producedByAccessory: source?.isProducedByAccessory
-        ))
+        )
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
@@ -232,6 +314,18 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     }
 
     func locationManagerDidChangeAuthorization(_: CLLocationManager) {
+        let previousStatus = authorizationStatus
+        authorizationStatus = manager.authorizationStatus
+        if preferences.backgroundLocationEnabled {
+            if previousStatus == .authorizedAlways,
+               authorizationStatus != .authorizedAlways {
+                stopBackgroundMonitoring(invalidateSession: true)
+                reportBackgroundUnavailableIfNeeded()
+            } else {
+                reconcileBackgroundMonitoring(allowAuthorizationRequest: false)
+            }
+        }
+
         guard pendingContinuation != nil else { return }
         switch authorizationStatus {
         case .denied:
@@ -264,6 +358,54 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         let continuation = pendingContinuation
         pendingContinuation = nil
         continuation?.resume(throwing: error)
+    }
+
+    private func reconcileBackgroundMonitoring(allowAuthorizationRequest: Bool) {
+        guard preferences.locationEnabled, preferences.backgroundLocationEnabled else {
+            stopBackgroundMonitoring(invalidateSession: true)
+            return
+        }
+
+        switch authorizationStatus {
+        case .authorizedAlways:
+            if authorizationSession == nil {
+                authorizationSession = authorizationSessionFactory()
+            }
+            guard !isBackgroundMonitoringActive else { return }
+            manager.startMonitoringSignificantLocationChanges()
+            isBackgroundMonitoringActive = true
+        case .notDetermined, .authorizedWhenInUse:
+            stopBackgroundMonitoring(invalidateSession: false)
+            if allowAuthorizationRequest, authorizationSession == nil {
+                authorizationSession = authorizationSessionFactory()
+            }
+        case .denied, .restricted:
+            stopBackgroundMonitoring(invalidateSession: true)
+        @unknown default:
+            stopBackgroundMonitoring(invalidateSession: true)
+        }
+    }
+
+    private func stopBackgroundMonitoring(invalidateSession: Bool) {
+        if isBackgroundMonitoringActive {
+            manager.stopMonitoringSignificantLocationChanges()
+            isBackgroundMonitoringActive = false
+        }
+        if invalidateSession {
+            authorizationSession?.invalidate()
+            authorizationSession = nil
+        }
+    }
+
+    private func reportBackgroundUnavailableIfNeeded() {
+        guard preferences.backgroundLocationEnabled,
+              authorizationStatus != .authorizedAlways,
+              !reportedBackgroundUnavailable,
+              let onBackgroundLocationUnavailable else {
+            return
+        }
+        reportedBackgroundUnavailable = true
+        onBackgroundLocationUnavailable()
     }
 
     private func validateAccess() throws {

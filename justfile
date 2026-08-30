@@ -37,6 +37,7 @@ test:
 
 [doc("Run the full local validation gate")]
 lint:
+    plutil -lint thane-agent-ios/Info.plist
     plutil -lint thane-agent-ios/PrivacyInfo.xcprivacy
     plutil -lint thane-agent-ios.xcodeproj/project.pbxproj
     git diff --check

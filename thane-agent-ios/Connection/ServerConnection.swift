@@ -1,5 +1,6 @@
 import Foundation
 import os
+import UIKit
 
 nonisolated enum WSEndpoint {
     static let realtimePath = "v1/realtime/ws"
@@ -145,6 +146,9 @@ final class ServerConnection {
                 token: details.token,
                 clientName: details.clientName,
                 clientID: details.clientID,
+                platform: "ios",
+                appVersion: Self.appVersion,
+                osVersion: UIDevice.current.systemVersion,
                 connectionProtocol: WSEndpoint.platformProtocol
             ), attemptID: attemptID)
 
@@ -265,6 +269,17 @@ final class ServerConnection {
     private func nextMessageID() -> Int64 {
         defer { nextID += 1 }
         return nextID
+    }
+
+    private nonisolated static var appVersion: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        return switch (version, build) {
+        case let (version?, build?): "\(version) (\(build))"
+        case let (version?, nil): version
+        case let (nil, build?): build
+        case (nil, nil): "unknown"
+        }
     }
 
     private func sendJSON<T: Encodable>(_ value: T, attemptID: UUID) async throws {
