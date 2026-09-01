@@ -206,6 +206,23 @@ struct AppStateIdentityBoundaryTests {
         #expect(fixture.appState.sharingPreferences.hasEnabledData == false)
     }
 
+    @Test("Removing after forgetting a pin still deletes scoped sharing")
+    func removingAfterForgetDeletesScopedSharing() async throws {
+        let evidence = try IdentityTestFixture.evidence()
+        let fixture = try AppIdentityFixture(
+            evidence: evidence,
+            pinnedEvidence: evidence
+        )
+        defer { fixture.cleanup() }
+
+        fixture.appState.setSystemCategory(.regional, enabled: true)
+        await fixture.appState.forgetThane()
+        await fixture.appState.removeConnection()
+
+        fixture.appState.sharingPreferences.scope(to: evidence.instance.id)
+        #expect(fixture.appState.sharingPreferences.hasEnabledData == false)
+    }
+
     private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async throws {
         for _ in 0..<100 {
             if condition() { return }

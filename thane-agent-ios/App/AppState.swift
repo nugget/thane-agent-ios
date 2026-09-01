@@ -319,6 +319,7 @@ final class AppState {
         connectionSettings.isEnabled = false
         connection.disconnect()
         let counterpartyID = identityPinning.pin?.identityID
+            ?? connectionSettings.pairwiseCounterpartyID
 
         do {
             try await observationPublisher.discardAllPending()
@@ -330,8 +331,8 @@ final class AppState {
             applySharingScope(nil)
             tokenInput = ""
             connectionSettings.removeConfiguration()
-            try identityPinning.changeScope(to: connectionSettings.connectionID)
             suspendObservationDelivery()
+            try identityPinning.changeScope(to: connectionSettings.connectionID)
         } catch {
             configurationError = error.localizedDescription
         }

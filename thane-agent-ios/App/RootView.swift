@@ -17,6 +17,7 @@ struct RootView: View {
                         selection = .settings
                     }
                 }
+                .id(appState.counterparty?.id)
             }
 
             Tab("Settings", systemImage: "gearshape", value: .settings) {

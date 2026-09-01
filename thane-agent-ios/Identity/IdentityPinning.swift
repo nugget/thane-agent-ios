@@ -151,14 +151,28 @@ final class IdentityPinningService {
         lastError = nil
     }
 
-    func changeScope(to connectionID: String) throws {
-        guard self.connectionID != connectionID else { return }
-        let newScope = ConnectionSecurityScope(connectionID: connectionID)
-        let loadedPin = try Self.loadPin(from: secureStore, scope: newScope)
-        self.connectionID = connectionID
-        pin = loadedPin
-        blockingError = nil
-        lastError = nil
+    func changeScope(to newConnectionID: String) throws {
+        guard connectionID != newConnectionID else { return }
+        connectionID = newConnectionID
+        do {
+            pin = try Self.loadPin(
+                from: secureStore,
+                scope: ConnectionSecurityScope(connectionID: newConnectionID)
+            )
+            blockingError = nil
+            lastError = nil
+        } catch let error as IdentityPinError {
+            pin = nil
+            blockingError = error
+            lastError = error.localizedDescription
+            throw error
+        } catch {
+            let pinError = IdentityPinError.storageUnavailable(error.localizedDescription)
+            pin = nil
+            blockingError = pinError
+            lastError = pinError.localizedDescription
+            throw pinError
+        }
     }
 
     private var securityScope: ConnectionSecurityScope {

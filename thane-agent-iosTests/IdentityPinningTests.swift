@@ -40,6 +40,25 @@ struct IdentityPinningTests {
         #expect(store.value(account: "thane-identity-pin.connection-two") == nil)
     }
 
+    @Test("A failed scope load commits the new scope in a fail-closed state")
+    func failedScopeChangeIsFailClosed() throws {
+        let evidence = try IdentityTestFixture.evidence()
+        let store = IdentityPinTestStore()
+        let service = IdentityPinningService(connectionID: connectionID, secureStore: store)
+        try service.pin(evidence)
+        store.failingLoadAccounts.insert("thane-identity-pin.connection-two")
+
+        #expect(throws: IdentityPinError.self) {
+            try service.changeScope(to: "connection-two")
+        }
+        #expect(service.connectionID == "connection-two")
+        #expect(service.pin == nil)
+        #expect(service.lastError != nil)
+        #expect(throws: IdentityPinError.self) {
+            try service.pin(evidence)
+        }
+    }
+
     @Test("A legacy global pin migrates into the current connection profile")
     func legacyPinMigration() throws {
         let evidence = try IdentityTestFixture.evidence()
@@ -223,6 +242,7 @@ private final class IdentityPinTestStore: CredentialStoring {
     private var values: [String: String]
     private(set) var savedAccounts: [String] = []
     private(set) var deletedAccounts: [String] = []
+    var failingLoadAccounts: Set<String> = []
 
     init(values: [String: String] = [:]) {
         self.values = values
@@ -233,8 +253,11 @@ private final class IdentityPinTestStore: CredentialStoring {
         savedAccounts.append(account)
     }
 
-    func load(account: String) -> String? {
-        values[account]
+    func load(account: String) throws -> String? {
+        if failingLoadAccounts.contains(account) {
+            throw IdentityPinTestStoreError.loadFailed
+        }
+        return values[account]
     }
 
     func delete(account: String) {
@@ -245,4 +268,8 @@ private final class IdentityPinTestStore: CredentialStoring {
     func value(account: String) -> String? {
         values[account]
     }
+}
+
+private enum IdentityPinTestStoreError: Error {
+    case loadFailed
 }
