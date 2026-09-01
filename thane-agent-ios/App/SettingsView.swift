@@ -235,7 +235,7 @@ private struct ConnectionEditorView: View {
                 }
             }
 
-            Section("Connection") {
+            Section("Connection Status") {
                 LabeledContent("Status") {
                     Label(appState.statusTitle, systemImage: appState.statusSymbol)
                         .foregroundStyle(statusColor)
@@ -250,7 +250,9 @@ private struct ConnectionEditorView: View {
                 if let protocolVersion = appState.connection.protocolVersion {
                     LabeledContent("Protocol version", value: protocolVersion)
                 }
+            }
 
+            Section("Configuration") {
                 TextField("https://thane.example.com", text: $urlString)
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
