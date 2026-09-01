@@ -213,6 +213,53 @@ struct IdentityEvidenceView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section {
+                if let certificate = evidence.instance.channelCA.certificate {
+                    NavigationLink {
+                        ThaneCertificateView(
+                            agentName: evidence.instance.name,
+                            material: evidence.instance.channelCA,
+                            certificate: certificate
+                        )
+                    } label: {
+                        LabeledContent("\(evidence.instance.name) channel CA") {
+                            Text(certificate.selfSigned ? "Self-signed" : "Issued")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } else {
+                    LabeledContent(
+                        "\(evidence.instance.name) channel CA",
+                        value: "Details unavailable"
+                    )
+                }
+
+                if appState.connection.transportCertificateChain.isEmpty {
+                    LabeledContent(
+                        "HTTPS/WSS transport",
+                        value: appState.hasActiveConnection ? "Unavailable" : "Not connected"
+                    )
+                } else {
+                    NavigationLink {
+                        TransportCertificateChainView(
+                            endpoint: appState.connectionSettings.serverURL,
+                            certificates: appState.connection.transportCertificateChain
+                        )
+                    } label: {
+                        LabeledContent("HTTPS/WSS transport") {
+                            Text(
+                                "\(appState.connection.transportCertificateChain.count) certificate\(appState.connection.transportCertificateChain.count == 1 ? "" : "s")"
+                            )
+                            .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            } header: {
+                Text("Certificates")
+            } footer: {
+                Text("The channel CA identifies Thane's internal secure-channel authority. The transport chain identifies the network endpoint accepted by iOS. Neither certificate automatically proves the other.")
+            }
+
             Section("Core origin") {
                 LabeledContent("Anchor posture", value: anchorLabel)
                 EvidenceValueRow(
@@ -261,7 +308,7 @@ struct IdentityEvidenceView: View {
                 LabeledContent("Schema", value: evidence.schemaVersion.formatted())
             }
         }
-        .navigationTitle("Identity Evidence")
+        .navigationTitle("Identity & Trust")
         .navigationBarTitleDisplayMode(.inline)
     }
 

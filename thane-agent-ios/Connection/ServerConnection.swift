@@ -47,6 +47,7 @@ final class ServerConnection {
     private(set) var protocolVersion: String?
     private(set) var serverVersion: String?
     private(set) var serverStartedAt: Date?
+    private(set) var transportCertificateChain: [TransportCertificate] = []
     private(set) var lastError: String?
 
     var registeredCapabilities: [Capability] = []
@@ -60,6 +61,8 @@ final class ServerConnection {
     )
     private var webSocketTask: URLSessionWebSocketTask?
     private var session: URLSession?
+    private var trustObserver: ServerTrustObserver?
+    private var pendingTransportCertificateChain: [TransportCertificate] = []
     private var readLoopTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
     private var responseTasks: [UUID: Task<Void, Never>] = [:]
@@ -97,6 +100,8 @@ final class ServerConnection {
         protocolVersion = nil
         serverVersion = nil
         serverStartedAt = nil
+        transportCertificateChain = []
+        pendingTransportCertificateChain = []
         lastError = nil
     }
 
@@ -116,10 +121,23 @@ final class ServerConnection {
         protocolVersion = nil
         serverVersion = nil
         serverStartedAt = nil
+        transportCertificateChain = []
+        pendingTransportCertificateChain = []
 
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 30
-        let session = URLSession(configuration: configuration)
+        let trustObserver = ServerTrustObserver { [weak self] certificateChain in
+            Task { @MainActor [weak self] in
+                guard let self, self.currentAttemptID == attemptID else { return }
+                self.pendingTransportCertificateChain = certificateChain
+            }
+        }
+        self.trustObserver = trustObserver
+        let session = URLSession(
+            configuration: configuration,
+            delegate: trustObserver,
+            delegateQueue: nil
+        )
         self.session = session
 
         var request = URLRequest(url: WSEndpoint.realtimeURL(base: details.url))
@@ -382,6 +400,8 @@ final class ServerConnection {
     func handleConnectionEstablished() {
         reconnectAttempt = 0
         state = .connected
+        transportCertificateChain = pendingTransportCertificateChain
+        pendingTransportCertificateChain = []
         lastError = nil
         logger.info("Connected to Thane")
         onConnected?()
@@ -396,6 +416,8 @@ final class ServerConnection {
         webSocketTask = nil
         session?.invalidateAndCancel()
         session = nil
+        trustObserver = nil
+        pendingTransportCertificateChain = []
     }
 }
 

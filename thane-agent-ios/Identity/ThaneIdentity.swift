@@ -42,6 +42,40 @@ nonisolated struct ThaneInstanceIdentity: Codable, Equatable, Sendable {
 nonisolated struct PublicIdentityMaterial: Codable, Equatable, Sendable {
     let algorithm: String
     let fingerprint: String
+    let certificate: X509CertificateEvidence?
+
+    init(
+        algorithm: String,
+        fingerprint: String,
+        certificate: X509CertificateEvidence? = nil
+    ) {
+        self.algorithm = algorithm
+        self.fingerprint = fingerprint
+        self.certificate = certificate
+    }
+}
+
+nonisolated struct X509CertificateEvidence: Codable, Equatable, Sendable {
+    let subject: String
+    let issuer: String
+    let serialNumber: String
+    let notBefore: Date
+    let notAfter: Date
+    let isCA: Bool
+    let selfSigned: Bool
+    let publicKeyAlgorithm: String
+    let signatureAlgorithm: String
+
+    enum CodingKeys: String, CodingKey {
+        case subject, issuer
+        case serialNumber = "serial_number"
+        case notBefore = "not_before"
+        case notAfter = "not_after"
+        case isCA = "is_ca"
+        case selfSigned = "self_signed"
+        case publicKeyAlgorithm = "public_key_algorithm"
+        case signatureAlgorithm = "signature_algorithm"
+    }
 }
 
 nonisolated struct CoreIdentityEvidence: Codable, Equatable, Sendable {

@@ -17,7 +17,18 @@ nonisolated enum IdentityTestFixture {
             },
             "channel_ca": {
               "algorithm": "x509-ed25519",
-              "fingerprint": "SHA256:q2QHfRjP9xjV8nL4Dzg0zz1IxF5XHFM9TPrWHhsLqXQ"
+              "fingerprint": "SHA256:q2QHfRjP9xjV8nL4Dzg0zz1IxF5XHFM9TPrWHhsLqXQ",
+              "certificate": {
+                "subject": "CN=pocket Thane Channel CA",
+                "issuer": "CN=pocket Thane Channel CA",
+                "serial_number": "4F3A19D270EBC1",
+                "not_before": "2026-07-01T12:00:00Z",
+                "not_after": "2036-07-01T12:00:00Z",
+                "is_ca": true,
+                "self_signed": true,
+                "public_key_algorithm": "Ed25519",
+                "signature_algorithm": "Ed25519"
+              }
             }
           },
           "core": {

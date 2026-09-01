@@ -21,8 +21,8 @@ nonisolated struct ThaneIdentityPin: Codable, Equatable, Sendable {
 
     func matches(_ evidence: ThaneIdentityEvidence) -> Bool {
         identityID == evidence.instance.id
-            && identityKey == evidence.instance.identityKey
-            && channelCA == evidence.instance.channelCA
+            && identityKey.hasSameIdentity(as: evidence.instance.identityKey)
+            && channelCA.hasSameIdentity(as: evidence.instance.channelCA)
     }
 
     var shortFingerprint: String {
@@ -36,6 +36,12 @@ nonisolated struct ThaneIdentityPin: Codable, Equatable, Sendable {
         case identityKey = "identity_key"
         case channelCA = "channel_ca"
         case pinnedAt = "pinned_at"
+    }
+}
+
+private extension PublicIdentityMaterial {
+    nonisolated func hasSameIdentity(as other: PublicIdentityMaterial) -> Bool {
+        algorithm == other.algorithm && fingerprint == other.fingerprint
     }
 }
 

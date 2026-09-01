@@ -72,6 +72,26 @@ struct IdentityPinningTests {
         #expect(ThaneIdentityPin(evidence: evidence).matches(renamed))
     }
 
+    @Test("Additive certificate metadata does not change pinned continuity")
+    func certificateMetadataDoesNotAffectMatch() throws {
+        let evidence = try IdentityTestFixture.evidence()
+        let legacyEvidence = replacingInstance(
+            in: evidence,
+            with: ThaneInstanceIdentity(
+                id: evidence.instance.id,
+                name: evidence.instance.name,
+                identityKey: evidence.instance.identityKey,
+                channelCA: PublicIdentityMaterial(
+                    algorithm: evidence.instance.channelCA.algorithm,
+                    fingerprint: evidence.instance.channelCA.fingerprint
+                )
+            )
+        )
+
+        #expect(ThaneIdentityPin(evidence: legacyEvidence).matches(evidence))
+        #expect(ThaneIdentityPin(evidence: evidence).matches(legacyEvidence))
+    }
+
     @Test("Each stable identity field participates in matching")
     func stableMaterialMismatch() throws {
         let evidence = try IdentityTestFixture.evidence()
