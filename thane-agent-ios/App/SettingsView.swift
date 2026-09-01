@@ -135,6 +135,48 @@ private struct ConnectionRow: View {
     }
 }
 
+private struct ConnectionStatusSection: View {
+    let statusTitle: String
+    let statusSymbol: String
+    let statusColor: Color
+    let account: String?
+    let serverVersion: String?
+    let serverStartedAt: Date?
+    let protocolVersion: String?
+
+    var body: some View {
+        Section("Connection Status") {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Status")
+                Spacer(minLength: 16)
+                HStack(spacing: 6) {
+                    Image(systemName: statusSymbol)
+                    Text(statusTitle)
+                }
+                .fixedSize(horizontal: true, vertical: true)
+                .foregroundStyle(statusColor)
+            }
+            .accessibilityElement(children: .combine)
+
+            if let account {
+                LabeledContent("Account", value: account)
+            }
+            if let serverVersion {
+                LabeledContent("Server version", value: serverVersion)
+            }
+            if let serverStartedAt {
+                LabeledContent("Uptime") {
+                    Text(serverStartedAt, style: .timer)
+                        .monospacedDigit()
+                }
+            }
+            if let protocolVersion {
+                LabeledContent("Protocol version", value: protocolVersion)
+            }
+        }
+    }
+}
+
 private struct AgentSettingsView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
@@ -189,28 +231,15 @@ private struct AgentSettingsView: View {
                 }
             }
 
-            Section("Connection Status") {
-                LabeledContent("Status") {
-                    Label(appState.statusTitle, systemImage: appState.statusSymbol)
-                        .foregroundStyle(statusColor)
-                }
-
-                if let account = appState.connection.account {
-                    LabeledContent("Account", value: account)
-                }
-                if let serverVersion = appState.connection.serverVersion {
-                    LabeledContent("Server version", value: serverVersion)
-                }
-                if let serverStartedAt = appState.connection.serverStartedAt {
-                    LabeledContent("Uptime") {
-                        Text(serverStartedAt, style: .timer)
-                            .monospacedDigit()
-                    }
-                }
-                if let protocolVersion = appState.connection.protocolVersion {
-                    LabeledContent("Protocol version", value: protocolVersion)
-                }
-            }
+            ConnectionStatusSection(
+                statusTitle: appState.statusTitle,
+                statusSymbol: appState.statusSymbol,
+                statusColor: statusColor,
+                account: appState.connection.account,
+                serverVersion: appState.connection.serverVersion,
+                serverStartedAt: appState.connection.serverStartedAt,
+                protocolVersion: appState.connection.protocolVersion
+            )
 
             Section("Configuration") {
                 TextField("https://thane.example.com", text: $urlString)
@@ -410,4 +439,18 @@ private extension String {
         AgentSettingsView()
     }
     .environment(PreviewFixtures.appState())
+}
+
+#Preview("Connected Status") {
+    Form {
+        ConnectionStatusSection(
+            statusTitle: "Connected",
+            statusSymbol: "checkmark.circle.fill",
+            statusColor: .green,
+            account: "mcphone",
+            serverVersion: "v0.10.3-330-g56f345f8",
+            serverStartedAt: Date().addingTimeInterval(-7_423),
+            protocolVersion: "0.1.0"
+        )
+    }
 }
