@@ -390,3 +390,24 @@ private extension String {
         isEmpty ? nil : self
     }
 }
+
+#Preview("Settings") {
+    NavigationStack {
+        SettingsView()
+    }
+    .environment(PreviewFixtures.appState())
+}
+
+#Preview("App Settings") {
+    NavigationStack {
+        AppSettingsView()
+    }
+    .environment(PreviewFixtures.appState())
+}
+
+#Preview("Agent Settings") {
+    NavigationStack {
+        AgentSettingsView()
+    }
+    .environment(PreviewFixtures.appState())
+}

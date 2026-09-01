@@ -398,3 +398,33 @@ private struct VerificationRow: View {
         }
     }
 }
+
+#Preview("Identity Components") {
+    List {
+        Section("Presented") {
+            IdentitySummary(
+                evidence: PreviewFixtures.evidence,
+                status: "Pinned and matching"
+            )
+        }
+        Section("Pinned") {
+            PinnedIdentitySummary(
+                pin: PreviewFixtures.pin,
+                status: "Pinned and matching"
+            )
+        }
+    }
+}
+
+#Preview("Pinned Identity") {
+    NavigationStack {
+        IdentityPinView(pin: PreviewFixtures.pin)
+    }
+}
+
+#Preview("Identity Evidence") {
+    NavigationStack {
+        IdentityEvidenceView(evidence: PreviewFixtures.evidence)
+    }
+    .environment(PreviewFixtures.appState())
+}

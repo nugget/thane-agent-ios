@@ -298,3 +298,10 @@ struct CounterpartyDetailView: View {
         return count == 0 ? "Nothing enabled" : "\(count) source\(count == 1 ? "" : "s") enabled"
     }
 }
+
+#Preview("Agent Detail") {
+    NavigationStack {
+        CounterpartyDetailView(counterparty: PreviewFixtures.counterparty)
+    }
+    .environment(PreviewFixtures.appState())
+}

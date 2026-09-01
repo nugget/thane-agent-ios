@@ -126,3 +126,22 @@ private struct CertificateValueRow: View {
         .padding(.vertical, 2)
     }
 }
+
+#Preview("Transport Certificate Chain") {
+    NavigationStack {
+        TransportCertificateChainView(
+            endpoint: PreviewFixtures.endpoint,
+            certificates: PreviewFixtures.transportCertificates
+        )
+    }
+}
+
+#Preview("Thane Channel CA") {
+    NavigationStack {
+        ThaneCertificateView(
+            agentName: PreviewFixtures.evidence.instance.name,
+            material: PreviewFixtures.evidence.instance.channelCA,
+            certificate: PreviewFixtures.channelCertificate
+        )
+    }
+}

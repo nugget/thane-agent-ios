@@ -65,3 +65,36 @@ struct OperationalRow: View {
         }
     }
 }
+
+#Preview("Card Components") {
+    ScrollView {
+        VStack(spacing: 22) {
+            AppCard(title: "Availability") {
+                OperationalRow(
+                    title: "Live requests",
+                    value: "Connected",
+                    systemImage: "checkmark.circle.fill",
+                    color: .green
+                )
+                Divider()
+                OperationalRow(
+                    title: "Background",
+                    value: "Significant changes enabled",
+                    systemImage: "location.fill",
+                    color: .green
+                )
+            }
+
+            AppCard(title: "Preference") {
+                Toggle(isOn: .constant(true)) {
+                    PreferenceLabel(
+                        title: "Device State",
+                        detail: "Shares device class, OS version, battery, and thermal state."
+                    )
+                }
+            }
+        }
+        .padding()
+    }
+    .background(Color(uiColor: .systemGroupedBackground))
+}

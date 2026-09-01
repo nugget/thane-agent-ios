@@ -234,3 +234,10 @@ struct SharingView: View {
         return appState.locationService.isBackgroundMonitoringActive ? .green : .orange
     }
 }
+
+#Preview("Sharing") {
+    NavigationStack {
+        SharingView(counterparty: PreviewFixtures.counterparty)
+    }
+    .environment(PreviewFixtures.appState())
+}
