@@ -20,6 +20,30 @@ struct ServerConnectionTests {
         #expect(callbackCount == 1)
     }
 
+    @Test("Certificate chain observed before establishment is published on connection")
+    func certificateChainObservedBeforeEstablishment() {
+        let connection = ServerConnection()
+        let chain = Self.certificateChain()
+
+        connection.recordTransportCertificateChain(chain)
+        #expect(connection.transportCertificateChain.isEmpty)
+
+        connection.handleConnectionEstablished()
+
+        #expect(connection.transportCertificateChain == chain)
+    }
+
+    @Test("Certificate chain observed after establishment is published immediately")
+    func certificateChainObservedAfterEstablishment() {
+        let connection = ServerConnection()
+        let chain = Self.certificateChain()
+
+        connection.handleConnectionEstablished()
+        connection.recordTransportCertificateChain(chain)
+
+        #expect(connection.transportCertificateChain == chain)
+    }
+
     @Test("Authentication failure stops reconnecting and reports the error")
     func authenticationFailureIsTerminal() {
         let connection = ServerConnection()
@@ -59,6 +83,20 @@ struct ServerConnectionTests {
         #expect(settings.isEnabled == false)
         #expect(appState.connection.state == .disconnected)
         #expect(appState.displayedError == "Authentication failed: Expired token")
+    }
+
+    private static func certificateChain() -> [TransportCertificate] {
+        [
+            TransportCertificate(
+                position: 0,
+                subject: "thane.example",
+                issuer: "Test CA",
+                sha256Fingerprint: "SHA256:test",
+                serialNumber: "01",
+                notValidBefore: nil,
+                notValidAfter: nil
+            ),
+        ]
     }
 }
 

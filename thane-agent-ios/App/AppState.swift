@@ -178,7 +178,10 @@ final class AppState {
 
     var counterparty: ThaneCounterparty? {
         if let pin = identityPinning.pin {
-            return ThaneCounterparty(pin: pin)
+            return ThaneCounterparty(
+                pin: pin,
+                presentedEvidence: presentedIdentity
+            )
         }
         if let evidence = presentedIdentity {
             return ThaneCounterparty(evidence: evidence)

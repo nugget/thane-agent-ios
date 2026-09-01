@@ -11,9 +11,13 @@ nonisolated struct ThaneCounterparty: Identifiable, Equatable, Sendable {
     let shortFingerprint: String
     let trust: Trust
 
-    init(pin: ThaneIdentityPin) {
+    init(pin: ThaneIdentityPin, presentedEvidence: ThaneIdentityEvidence? = nil) {
         id = pin.identityID
-        displayName = pin.nameAtPinning
+        if let presentedEvidence, pin.matches(presentedEvidence) {
+            displayName = presentedEvidence.instance.name
+        } else {
+            displayName = pin.nameAtPinning
+        }
         shortFingerprint = pin.shortFingerprint
         trust = .pinned
     }

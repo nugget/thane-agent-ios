@@ -129,7 +129,7 @@ final class ServerConnection {
         let trustObserver = ServerTrustObserver { [weak self] certificateChain in
             Task { @MainActor [weak self] in
                 guard let self, self.currentAttemptID == attemptID else { return }
-                self.pendingTransportCertificateChain = certificateChain
+                self.recordTransportCertificateChain(certificateChain)
             }
         }
         self.trustObserver = trustObserver
@@ -405,6 +405,14 @@ final class ServerConnection {
         lastError = nil
         logger.info("Connected to Thane")
         onConnected?()
+    }
+
+    func recordTransportCertificateChain(_ certificateChain: [TransportCertificate]) {
+        if state == .connected {
+            transportCertificateChain = certificateChain
+        } else {
+            pendingTransportCertificateChain = certificateChain
+        }
     }
 
     private func cleanupTransport(closeCode: URLSessionWebSocketTask.CloseCode) {
