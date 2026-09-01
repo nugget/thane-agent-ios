@@ -5,6 +5,26 @@ import Testing
 @Suite("Connection settings")
 @MainActor
 struct ConnectionSettingsTests {
+    @Test("Connection configuration has a durable identity separate from the client")
+    func connectionIdentity() throws {
+        let suite = "ConnectionSettingsTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let credentials = FakeCredentialStore(value: nil)
+
+        let settings = ConnectionSettings(defaults: defaults, credentialStore: credentials)
+        let connectionID = settings.connectionID
+        let clientID = settings.clientID
+
+        let restored = ConnectionSettings(defaults: defaults, credentialStore: credentials)
+        #expect(restored.connectionID == connectionID)
+        #expect(restored.clientID == clientID)
+
+        restored.removeConfiguration()
+        #expect(restored.connectionID != connectionID)
+        #expect(restored.clientID == clientID)
+    }
+
     @Test("Forget Token deletes the Keychain value, clears the field, and disconnects")
     func forgetToken() throws {
         let suite = "ConnectionSettingsTests.\(UUID().uuidString)"

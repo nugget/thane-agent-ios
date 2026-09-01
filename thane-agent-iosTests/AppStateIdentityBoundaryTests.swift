@@ -22,6 +22,7 @@ struct AppStateIdentityBoundaryTests {
 
         #expect(fixture.appState.identityPinning.pin?.matches(evidence) == true)
         #expect(fixture.appState.identityContinuity.permitsPrivateDelivery)
+        #expect(fixture.appState.sharingPreferences.counterpartyID == evidence.instance.id)
         #expect(fixture.appState.connection.state != .disconnected)
         fixture.appState.disconnect()
     }
@@ -56,7 +57,7 @@ struct AppStateIdentityBoundaryTests {
         #expect(fixture.appState.connection.state == .disconnected)
         #expect(
             fixture.appState.displayedError
-                == "The presented Thane identity does not match this iPhone's pin. Private delivery is blocked."
+                == "The presented identity does not match pocket's pin on this iPhone. Private delivery is blocked."
         )
     }
 
@@ -86,6 +87,56 @@ struct AppStateIdentityBoundaryTests {
         #expect(fixture.appState.connection.state == .disconnected)
         try await waitUntil { !identityService.isRefreshing }
         #expect(fixture.appState.connection.state == .disconnected)
+    }
+
+    @Test("Forgetting a pin suspends but preserves that counterparty's sharing policy")
+    func forgettingPinSuspendsScopedSharing() async throws {
+        let evidence = try IdentityTestFixture.evidence()
+        let fixture = try AppIdentityFixture(
+            evidence: evidence,
+            pinnedEvidence: evidence
+        )
+        defer { fixture.cleanup() }
+
+        fixture.appState.connectUsingCurrentValues()
+        try await fixture.waitForIdentityRefresh()
+        fixture.appState.setSystemCategory(.regional, enabled: true)
+        #expect(fixture.appState.sharingPreferences.regionalEnabled)
+
+        await fixture.appState.forgetThane()
+
+        #expect(fixture.appState.identityPinning.pin == nil)
+        #expect(fixture.appState.sharingPreferences.counterpartyID == nil)
+        #expect(fixture.appState.sharingPreferences.hasEnabledData == false)
+
+        fixture.appState.pinPresentedIdentity()
+        #expect(fixture.appState.sharingPreferences.counterpartyID == evidence.instance.id)
+        #expect(fixture.appState.sharingPreferences.regionalEnabled)
+        fixture.appState.disconnect()
+    }
+
+    @Test("Removing a connection deletes its identity-scoped local state")
+    func removingConnectionDeletesScopedState() async throws {
+        let evidence = try IdentityTestFixture.evidence()
+        let fixture = try AppIdentityFixture(
+            evidence: evidence,
+            pinnedEvidence: evidence
+        )
+        defer { fixture.cleanup() }
+        let originalConnectionID = fixture.appState.connectionSettings.connectionID
+
+        fixture.appState.setSystemCategory(.regional, enabled: true)
+        await fixture.appState.removeConnection()
+
+        #expect(fixture.appState.configuredConnections.isEmpty)
+        #expect(fixture.appState.connectionSettings.connectionID != originalConnectionID)
+        #expect(fixture.appState.connectionSettings.urlString.isEmpty)
+        #expect(fixture.appState.tokenInput.isEmpty)
+        #expect(fixture.appState.identityPinning.pin == nil)
+        #expect(fixture.appState.sharingPreferences.counterpartyID == nil)
+
+        fixture.appState.sharingPreferences.scope(to: evidence.instance.id)
+        #expect(fixture.appState.sharingPreferences.hasEnabledData == false)
     }
 
     private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async throws {

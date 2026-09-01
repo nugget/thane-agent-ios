@@ -2,30 +2,196 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(AppState.self) private var appState
-    @State private var showingForgetConfirmation = false
-    @State private var showingForgetThaneConfirmation = false
-    @State private var showingIdentity = false
-    @State private var showingPin = false
 
     var body: some View {
         Form {
-            Section("Identity & Connection") {
-                if let evidence = appState.presentedIdentity {
-                    IdentitySummaryButton(
-                        evidence: evidence,
-                        status: appState.identityStatusLabel
-                    ) {
-                        showingIdentity = true
-                    }
-                } else if let pin = appState.identityPinning.pin {
-                    PinnedIdentitySummaryButton(
-                        pin: pin,
-                        status: appState.identityStatusLabel
-                    ) {
-                        showingPin = true
+            Section {
+                NavigationLink {
+                    ConnectionListView()
+                } label: {
+                    LabeledContent {
+                        Text(connectionCountLabel)
+                            .foregroundStyle(.secondary)
+                    } label: {
+                        Label("Connections", systemImage: "person.2.crop.square.stack")
                     }
                 }
+            } header: {
+                Text("Agents")
+            } footer: {
+                Text("Adding, replacing, or removing an agent connection is uncommon. Sharing and identity remain available from the agent's profile in Chats.")
+            }
 
+            Section("Companion") {
+                LabeledContent("Client ID") {
+                    Text(appState.connectionSettings.clientID)
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                }
+                LabeledContent("App version", value: appVersion)
+            }
+        }
+        .navigationTitle("Settings")
+    }
+
+    private var connectionCountLabel: String {
+        appState.hasConnectionConfiguration ? "1 configured" : "None"
+    }
+
+    private var appVersion: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        return switch (version, build) {
+        case let (version?, build?): "\(version) (\(build))"
+        case let (version?, nil): version
+        case let (nil, build?): build
+        case (nil, nil): "Unknown"
+        }
+    }
+}
+
+private struct ConnectionListView: View {
+    @Environment(AppState.self) private var appState
+    @State private var showingRemovalConfirmation = false
+
+    var body: some View {
+        Group {
+            if appState.hasConnectionConfiguration {
+                List {
+                    Section {
+                        ForEach(appState.configuredConnections) { connection in
+                            NavigationLink {
+                                ConnectionEditorView()
+                            } label: {
+                                ConnectionRow(connection: connection)
+                            }
+                        }
+                        .onDelete { _ in
+                            showingRemovalConfirmation = true
+                        }
+                    } footer: {
+                        Text("This build supports one active agent connection. Each conversation and sharing policy is already keyed by the counterparty's stable identity.")
+                    }
+                }
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        EditButton()
+                    }
+                }
+            } else {
+                ContentUnavailableView {
+                    Label("No Connections", systemImage: "person.crop.circle.badge.plus")
+                } description: {
+                    Text("Add the agent this iPhone should communicate with.")
+                } actions: {
+                    NavigationLink("Add Agent") {
+                        ConnectionEditorView()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+        }
+        .navigationTitle("Agent Connections")
+        .toolbar {
+            if !appState.hasConnectionConfiguration {
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink {
+                        ConnectionEditorView()
+                    } label: {
+                        Label("Add Agent", systemImage: "plus")
+                    }
+                }
+            }
+        }
+        .confirmationDialog(
+            "Remove this agent connection?",
+            isPresented: $showingRemovalConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Remove Connection", role: .destructive) {
+                Task { await appState.removeConnection() }
+            }
+        } message: {
+            Text("The API token, identity pin, sharing choices, and queued observations for this agent will be removed from this iPhone.")
+        }
+    }
+}
+
+private struct ConnectionRow: View {
+    @Environment(AppState.self) private var appState
+
+    let connection: ConfiguredThaneConnection
+
+    var body: some View {
+        HStack(spacing: 12) {
+            if let counterparty = connection.counterparty {
+                ThaneIdentityMark(identityID: counterparty.id, size: 44)
+            } else {
+                Image(systemName: "person.crop.circle.badge.questionmark")
+                    .font(.title)
+                    .frame(width: 44, height: 44)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(connection.counterparty?.displayName ?? connectionHost)
+                    .font(.headline)
+                Text(connection.counterparty == nil ? "Identity not pinned" : appState.identityStatusLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if connection.counterparty != nil {
+                    Text(connectionHost)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
+    private var connectionHost: String {
+        connection.endpoint?.host()
+            ?? appState.connectionSettings.urlString
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+            ?? "Unconfigured Agent"
+    }
+}
+
+private struct ConnectionEditorView: View {
+    @Environment(AppState.self) private var appState
+    @Environment(\.dismiss) private var dismiss
+    @State private var urlString = ""
+    @State private var token = ""
+    @State private var hasLoadedValues = false
+    @State private var showingForgetTokenConfirmation = false
+    @State private var showingForgetThaneConfirmation = false
+    @State private var showingRemovalConfirmation = false
+
+    var body: some View {
+        Form {
+            if let counterparty = appState.counterparty {
+                Section("Counterparty") {
+                    NavigationLink {
+                        CounterpartyDetailView(counterparty: counterparty)
+                    } label: {
+                        HStack(spacing: 12) {
+                            ThaneIdentityMark(identityID: counterparty.id, size: 44)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(counterparty.displayName)
+                                    .font(.headline)
+                                Text(counterparty.shortFingerprint)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                                Text(appState.identityStatusLabel)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Section("Connection") {
                 LabeledContent("Status") {
                     Label(appState.statusTitle, systemImage: appState.statusSymbol)
                         .foregroundStyle(statusColor)
@@ -37,25 +203,17 @@ struct SettingsView: View {
                 if let serverVersion = appState.connection.serverVersion {
                     LabeledContent("Server version", value: serverVersion)
                 }
-            }
 
-            Section("Server") {
-                TextField("https://thane.example.com", text: Binding(
-                    get: { appState.connectionSettings.urlString },
-                    set: { appState.connectionSettings.urlString = $0 }
-                ))
-                .keyboardType(.URL)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .textContentType(.URL)
-                .disabled(appState.hasActiveConnection)
+                TextField("https://thane.example.com", text: $urlString)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .textContentType(.URL)
+                    .disabled(appState.hasActiveConnection)
 
-                SecureField("API token", text: Binding(
-                    get: { appState.tokenInput },
-                    set: { appState.tokenInput = $0 }
-                ))
-                .textContentType(.password)
-                .disabled(appState.hasActiveConnection)
+                SecureField("API token", text: $token)
+                    .textContentType(.password)
+                    .disabled(appState.hasActiveConnection)
 
                 if appState.hasActiveConnection {
                     Text("Disconnect before editing connection credentials.")
@@ -79,66 +237,76 @@ struct SettingsView: View {
                     }
                 } else {
                     Button(appState.identityPinning.pin == nil ? "Check Identity" : "Connect") {
-                        appState.connectUsingCurrentValues()
+                        applyDraftAndConnect()
                     }
-                    .disabled(!appState.hasConnectionCredentials)
+                    .disabled(!draftHasCredentials)
                 }
 
                 Button("Forget API Token", role: .destructive) {
-                    showingForgetConfirmation = true
+                    showingForgetTokenConfirmation = true
                 }
-                .disabled(appState.tokenInput.isEmpty)
+                .disabled(token.isEmpty)
 
                 if appState.identityPinning.pin != nil || appState.identityPinning.lastError != nil {
-                    Button("Forget This Thane", role: .destructive) {
+                    Button("Forget Identity Pin", role: .destructive) {
                         showingForgetThaneConfirmation = true
                     }
                 }
             } footer: {
-                Text("The API token and identity pin are stored in this iPhone's protected Keychain. Remote servers must use HTTPS, and TLS verification is never disabled. Private delivery starts only after current evidence matches the pin.")
+                Text("The API token and identity pin are stored in this iPhone's protected Keychain. Private delivery starts only after current evidence matches the pin.")
             }
 
-            Section("Companion") {
-                LabeledContent("Client ID") {
-                    Text(appState.connectionSettings.clientID)
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
+            if appState.hasConnectionConfiguration {
+                Section {
+                    Button("Remove Connection", role: .destructive) {
+                        showingRemovalConfirmation = true
+                    }
+                } footer: {
+                    Text("Removal also deletes this counterparty's sharing choices and queued observations from this iPhone.")
                 }
-                LabeledContent("App version", value: appVersion)
             }
         }
-        .navigationTitle("Settings")
-        .sheet(isPresented: $showingIdentity) {
-            if let evidence = appState.presentedIdentity {
-                IdentityEvidenceView(evidence: evidence)
-            }
-        }
-        .sheet(isPresented: $showingPin) {
-            if let pin = appState.identityPinning.pin {
-                IdentityPinView(pin: pin)
-            }
-        }
+        .navigationTitle(appState.counterparty?.displayName ?? "New Agent")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear(perform: loadValuesIfNeeded)
         .confirmationDialog(
             "Forget this API token?",
-            isPresented: $showingForgetConfirmation,
+            isPresented: $showingForgetTokenConfirmation,
             titleVisibility: .visible
         ) {
             Button("Forget API Token", role: .destructive) {
                 appState.forgetToken()
+                token = ""
             }
         } message: {
-            Text("The app will disconnect and remove the credential from Keychain. Your local sharing choices are unchanged.")
+            Text("The app will disconnect and remove the credential from Keychain. This counterparty's sharing choices are unchanged.")
         }
         .confirmationDialog(
-            "Forget this Thane?",
+            "Forget this identity pin?",
             isPresented: $showingForgetThaneConfirmation,
             titleVisibility: .visible
         ) {
-            Button("Forget This Thane", role: .destructive) {
+            Button("Forget Identity Pin", role: .destructive) {
                 Task { await appState.forgetThane() }
             }
         } message: {
-            Text("The app will disconnect, remove the identity pin, and permanently discard observations queued for this Thane. The API token and local sharing choices are unchanged.")
+            Text("The app will disconnect, remove the identity pin, and discard queued observations. Connection credentials and this counterparty's saved sharing choices are unchanged.")
+        }
+        .confirmationDialog(
+            "Remove this agent connection?",
+            isPresented: $showingRemovalConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Remove Connection", role: .destructive) {
+                Task {
+                    await appState.removeConnection()
+                    if !appState.hasConnectionConfiguration {
+                        dismiss()
+                    }
+                }
+            }
+        } message: {
+            Text("The API token, identity pin, sharing choices, and queued observations for this agent will be removed from this iPhone.")
         }
     }
 
@@ -150,14 +318,27 @@ struct SettingsView: View {
         }
     }
 
-    private var appVersion: String {
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
-        return switch (version, build) {
-        case let (version?, build?): "\(version) (\(build))"
-        case let (version?, nil): version
-        case let (nil, build?): build
-        case (nil, nil): "Unknown"
-        }
+    private var draftHasCredentials: Bool {
+        ServerAddress.parse(urlString) != nil
+            && !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func loadValuesIfNeeded() {
+        guard !hasLoadedValues else { return }
+        urlString = appState.connectionSettings.urlString
+        token = appState.tokenInput
+        hasLoadedValues = true
+    }
+
+    private func applyDraftAndConnect() {
+        appState.connectionSettings.urlString = urlString
+        appState.tokenInput = token
+        appState.connectUsingCurrentValues()
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }

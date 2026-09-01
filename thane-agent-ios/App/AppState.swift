@@ -14,6 +14,7 @@ final class AppState {
     let observationPublisher: ObservationPublisher
     let identityService: IdentityService
     let identityPinning: IdentityPinningService
+    let conversationStore: ConversationStore
 
     var tokenInput: String = ""
     private(set) var configurationError: String?
@@ -25,13 +26,16 @@ final class AppState {
         sharingPreferences: SharingPreferences = SharingPreferences(),
         observationPublisher: ObservationPublisher = ObservationPublisher(),
         identityService: IdentityService = IdentityService(),
-        identityPinning: IdentityPinningService = IdentityPinningService()
+        identityPinning: IdentityPinningService = IdentityPinningService(),
+        conversationStore: ConversationStore = ConversationStore()
     ) {
         self.connectionSettings = connectionSettings
         self.sharingPreferences = sharingPreferences
         self.observationPublisher = observationPublisher
         self.identityService = identityService
         self.identityPinning = identityPinning
+        self.conversationStore = conversationStore
+        sharingPreferences.scope(to: identityPinning.pin?.identityID)
 
         let connection = ServerConnection()
         let router = PlatformServiceRouter()
@@ -153,6 +157,33 @@ final class AppState {
             && !tokenInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    var hasConnectionConfiguration: Bool {
+        identityPinning.pin != nil
+            || !connectionSettings.urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !tokenInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var counterparty: ThaneCounterparty? {
+        if let pin = identityPinning.pin {
+            return ThaneCounterparty(pin: pin)
+        }
+        if let evidence = presentedIdentity {
+            return ThaneCounterparty(evidence: evidence)
+        }
+        return nil
+    }
+
+    var configuredConnections: [ConfiguredThaneConnection] {
+        guard hasConnectionConfiguration else { return [] }
+        return [
+            ConfiguredThaneConnection(
+                id: connectionSettings.connectionID,
+                endpoint: connectionSettings.serverURL,
+                counterparty: counterparty
+            ),
+        ]
+    }
+
     var presentedIdentity: ThaneIdentityEvidence? {
         identityService.evidence(for: connectionSettings.serverURL)
     }
@@ -198,13 +229,13 @@ final class AppState {
     func connectUsingCurrentValues() {
         configurationError = nil
         guard let url = connectionSettings.serverURL else {
-            configurationError = "Enter an HTTPS Thane base URL. HTTP is accepted only for loopback development."
+            configurationError = "Enter an HTTPS agent server URL. HTTP is accepted only for loopback development."
             return
         }
 
         let token = tokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !token.isEmpty else {
-            configurationError = "Enter a Thane API token."
+            configurationError = "Enter an agent API token."
             return
         }
 
@@ -228,12 +259,12 @@ final class AppState {
     func refreshIdentity() {
         configurationError = nil
         guard let url = connectionSettings.serverURL else {
-            configurationError = "Enter a valid Thane base URL before refreshing identity evidence."
+            configurationError = "Enter a valid agent server URL before refreshing identity evidence."
             return
         }
         let token = tokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !token.isEmpty else {
-            configurationError = "Enter a Thane API token before refreshing identity evidence."
+            configurationError = "Enter an agent API token before refreshing identity evidence."
             return
         }
         suspendPrivateDelivery()
@@ -243,7 +274,7 @@ final class AppState {
     func pinPresentedIdentity() {
         configurationError = nil
         guard let evidence = presentedIdentity else {
-            configurationError = "Refresh identity evidence before pinning this Thane."
+            configurationError = "Refresh identity evidence before pinning this agent."
             return
         }
         do {
@@ -252,6 +283,7 @@ final class AppState {
             configurationError = error.localizedDescription
             return
         }
+        applySharingScope(evidence.instance.id)
         reconcileIdentityBoundary()
     }
 
@@ -262,6 +294,29 @@ final class AppState {
         do {
             try await observationPublisher.discardAllPending()
             try identityPinning.forget()
+            applySharingScope(nil)
+        } catch {
+            configurationError = error.localizedDescription
+        }
+    }
+
+    func removeConnection() async {
+        configurationError = nil
+        connectionSettings.isEnabled = false
+        connection.disconnect()
+        let counterpartyID = identityPinning.pin?.identityID
+
+        do {
+            try await observationPublisher.discardAllPending()
+            try connectionSettings.deleteToken()
+            try identityPinning.forget()
+            if let counterpartyID {
+                sharingPreferences.removeScope(for: counterpartyID)
+            }
+            applySharingScope(nil)
+            tokenInput = ""
+            connectionSettings.removeConfiguration()
+            suspendObservationDelivery()
         } catch {
             configurationError = error.localizedDescription
         }
@@ -281,6 +336,11 @@ final class AppState {
     }
 
     func setSystemCategory(_ category: SystemContextCategory, enabled: Bool) {
+        guard sharingPreferences.counterpartyID == identityPinning.pin?.identityID,
+              sharingPreferences.counterpartyID != nil else {
+            configurationError = "Pin this agent before changing what is shared with it."
+            return
+        }
         sharingPreferences.setEnabled(enabled, for: category)
         if category == .network {
             systemContextService.setNetworkObservationEnabled(enabled)
@@ -291,6 +351,11 @@ final class AppState {
     }
 
     func setLocationSharing(enabled: Bool) {
+        guard sharingPreferences.counterpartyID == identityPinning.pin?.identityID,
+              sharingPreferences.counterpartyID != nil else {
+            configurationError = "Pin this agent before changing what is shared with it."
+            return
+        }
         if !enabled, sharingPreferences.backgroundLocationEnabled {
             locationService.setBackgroundMonitoringEnabled(false)
             observationPublisher.withdraw(.location)
@@ -304,6 +369,11 @@ final class AppState {
     }
 
     func setBackgroundLocationSharing(enabled: Bool) {
+        guard sharingPreferences.counterpartyID == identityPinning.pin?.identityID,
+              sharingPreferences.counterpartyID != nil else {
+            configurationError = "Pin this agent before changing what is shared with it."
+            return
+        }
         locationService.setBackgroundMonitoringEnabled(enabled)
         if !enabled {
             observationPublisher.withdraw(.location)
@@ -343,6 +413,14 @@ final class AppState {
         )
     }
 
+    private func applySharingScope(_ counterpartyID: String?) {
+        locationService.suspendForCounterpartyChange()
+        sharingPreferences.scope(to: counterpartyID)
+        systemContextService.setNetworkObservationEnabled(sharingPreferences.networkEnabled)
+        systemContextService.setDeviceObservationEnabled(sharingPreferences.deviceEnabled)
+        locationService.restoreBackgroundMonitoringIfAuthorized()
+    }
+
     private func refreshIdentityForConfiguredConnection() {
         guard let url = connectionSettings.serverURL else { return }
         let token = tokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -361,7 +439,8 @@ final class AppState {
               let url = connectionSettings.serverURL else {
             suspendPrivateDelivery()
             if identityContinuity == .mismatch {
-                configurationError = "The presented Thane identity does not match this iPhone's pin. Private delivery is blocked."
+                let name = identityPinning.pin?.nameAtPinning ?? "the pinned agent"
+                configurationError = "The presented identity does not match \(name)'s pin on this iPhone. Private delivery is blocked."
             }
             return
         }

@@ -64,7 +64,7 @@ struct IdentitySummaryButton: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(
-            "Thane identity \(evidence.instance.name), fingerprint \(evidence.instance.shortFingerprint), \(status)"
+            "Agent identity \(evidence.instance.name), fingerprint \(evidence.instance.shortFingerprint), \(status)"
         )
         .accessibilityHint("Shows cryptographic identity and core evidence")
     }
@@ -92,7 +92,7 @@ struct PinnedIdentitySummary: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "Pinned Thane identity \(pin.nameAtPinning), fingerprint \(pin.shortFingerprint), \(status)"
+            "Pinned agent identity \(pin.nameAtPinning), fingerprint \(pin.shortFingerprint), \(status)"
         )
     }
 }
@@ -136,7 +136,7 @@ struct IdentityPinView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 8)
 
-                    Text("This is the identity material recorded in this iPhone's protected Keychain. Matching does not independently prove who operates the Thane.")
+                    Text("This is the identity material recorded in this iPhone's protected Keychain. Matching does not independently prove who operates this agent.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -161,7 +161,7 @@ struct IdentityPinView: View {
                     LabeledContent("Pin schema", value: pin.schemaVersion.formatted())
                 }
             }
-            .navigationTitle("Pinned Thane")
+            .navigationTitle(pin.nameAtPinning)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -202,7 +202,7 @@ struct IdentityEvidenceView: View {
                         .foregroundStyle(continuityColor)
 
                     if appState.identityContinuity == .presented {
-                        Button("Pin This Thane & Connect") {
+                        Button("Pin \(evidence.instance.name) & Connect") {
                             appState.pinPresentedIdentity()
                             if appState.identityContinuity.permitsPrivateDelivery {
                                 dismiss()
@@ -226,7 +226,7 @@ struct IdentityEvidenceView: View {
                         }
                     }
 
-                    Text("A pin records the stable instance ID, signing-key fingerprint, and channel-CA fingerprint in this iPhone's protected Keychain. It does not independently prove who operates the Thane.")
+                    Text("A pin records the stable instance ID, signing-key fingerprint, and channel-CA fingerprint in this iPhone's protected Keychain. It does not independently prove who operates this agent.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -282,7 +282,7 @@ struct IdentityEvidenceView: View {
                     VerificationRow(title: "Birth admission", check: evidence.core.verification.admission)
                     VerificationRow(title: "Current HEAD", check: evidence.core.verification.head)
 
-                    Text("These are checks reported from the running Thane's core. They are evidence for the operator to evaluate, not a universal trust verdict.")
+                    Text("These are checks reported from the running agent's core. They are evidence for the operator to evaluate, not a universal trust verdict.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -295,7 +295,7 @@ struct IdentityEvidenceView: View {
                     LabeledContent("Schema", value: evidence.schemaVersion.formatted())
                 }
             }
-            .navigationTitle("Thane Identity")
+            .navigationTitle(evidence.instance.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

@@ -5,6 +5,7 @@ import Foundation
 final class ConnectionSettings {
     private nonisolated static let urlKey = "connection.baseURL"
     private nonisolated static let clientIDKey = "connection.clientID"
+    private nonisolated static let connectionIDKey = "connection.configurationID"
     private nonisolated static let enabledKey = "connection.enabled"
     private nonisolated static let tokenAccount = "thane-api-token"
 
@@ -18,6 +19,7 @@ final class ConnectionSettings {
         didSet { defaults.set(isEnabled, forKey: Self.enabledKey) }
     }
     let clientID: String
+    private(set) var connectionID: String
 
     init(
         defaults: UserDefaults = .standard,
@@ -33,6 +35,13 @@ final class ConnectionSettings {
             let generated = UUID().uuidString
             defaults.set(generated, forKey: Self.clientIDKey)
             clientID = generated
+        }
+        if let existing = defaults.string(forKey: Self.connectionIDKey) {
+            connectionID = existing
+        } else {
+            let generated = UUID().uuidString
+            defaults.set(generated, forKey: Self.connectionIDKey)
+            connectionID = generated
         }
     }
 
@@ -52,5 +61,12 @@ final class ConnectionSettings {
 
     func deleteToken() throws {
         try credentialStore.delete(account: Self.tokenAccount)
+    }
+
+    func removeConfiguration() {
+        urlString = ""
+        isEnabled = false
+        connectionID = UUID().uuidString
+        defaults.set(connectionID, forKey: Self.connectionIDKey)
     }
 }

@@ -246,6 +246,11 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         finish(throwing: LocationServiceError.sharingDisabled)
     }
 
+    func suspendForCounterpartyChange() {
+        stopBackgroundMonitoring(invalidateSession: true)
+        finish(throwing: LocationServiceError.sharingDisabled)
+    }
+
     func locationManager(
         _: CLLocationManager,
         didUpdateLocations locations: [CLLocation]
