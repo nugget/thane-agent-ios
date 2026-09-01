@@ -247,6 +247,9 @@ private struct ConnectionEditorView: View {
                 if let serverVersion = appState.connection.serverVersion {
                     LabeledContent("Server version", value: serverVersion)
                 }
+                if let protocolVersion = appState.connection.protocolVersion {
+                    LabeledContent("Protocol version", value: protocolVersion)
+                }
 
                 TextField("https://thane.example.com", text: $urlString)
                     .keyboardType(.URL)

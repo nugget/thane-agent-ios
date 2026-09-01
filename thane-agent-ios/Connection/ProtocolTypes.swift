@@ -43,10 +43,12 @@ nonisolated struct AuthOKMessage: Codable, Sendable {
     let type: String
     let providerID: String
     let account: String
+    let serverVersion: String?
 
     enum CodingKeys: String, CodingKey {
         case type, account
         case providerID = "provider_id"
+        case serverVersion = "server_version"
     }
 }
 

@@ -44,6 +44,7 @@ final class ServerConnection {
     private(set) var state: State = .disconnected
     private(set) var providerID: String?
     private(set) var account: String?
+    private(set) var protocolVersion: String?
     private(set) var serverVersion: String?
     private(set) var lastError: String?
 
@@ -92,6 +93,7 @@ final class ServerConnection {
         state = .disconnected
         providerID = nil
         account = nil
+        protocolVersion = nil
         serverVersion = nil
         lastError = nil
     }
@@ -109,6 +111,7 @@ final class ServerConnection {
         lastError = nil
         providerID = nil
         account = nil
+        protocolVersion = nil
         serverVersion = nil
 
         let configuration = URLSessionConfiguration.default
@@ -138,7 +141,7 @@ final class ServerConnection {
                     "Expected auth_required, got \(authRequired.envelope.type)"
                 )
             }
-            serverVersion = try? JSONDecoder()
+            protocolVersion = try? JSONDecoder()
                 .decode(AuthRequiredMessage.self, from: authRequired.rawData)
                 .version
 
@@ -173,6 +176,7 @@ final class ServerConnection {
             ) {
                 providerID = authOK.providerID
                 account = authOK.account
+                serverVersion = authOK.serverVersion
             }
 
             try await registerCapabilities(attemptID: attemptID)
