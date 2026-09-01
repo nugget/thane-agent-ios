@@ -28,11 +28,11 @@ struct ProtocolTypesTests {
         #expect(object["os_version"] == "26.6")
     }
 
-    @Test("Authenticated server build version is additive")
-    func authOKServerVersionCompatibility() throws {
+    @Test("Authenticated server runtime diagnostics are additive")
+    func authOKRuntimeDiagnosticsCompatibility() throws {
         let current = try JSONDecoder().decode(
             AuthOKMessage.self,
-            from: Data(#"{"type":"auth_ok","provider_id":"prov_1","account":"nugget","server_version":"v0.10.3-4-gabc123"}"#.utf8)
+            from: Data(#"{"type":"auth_ok","provider_id":"prov_1","account":"nugget","server_version":"v0.10.3-4-gabc123","server_uptime_seconds":3723}"#.utf8)
         )
         let legacy = try JSONDecoder().decode(
             AuthOKMessage.self,
@@ -40,7 +40,9 @@ struct ProtocolTypesTests {
         )
 
         #expect(current.serverVersion == "v0.10.3-4-gabc123")
+        #expect(current.serverUptimeSeconds == 3_723)
         #expect(legacy.serverVersion == nil)
+        #expect(legacy.serverUptimeSeconds == nil)
     }
 
     @Test("Tool definitions preserve their exact JSON Schema")

@@ -46,6 +46,7 @@ final class ServerConnection {
     private(set) var account: String?
     private(set) var protocolVersion: String?
     private(set) var serverVersion: String?
+    private(set) var serverStartedAt: Date?
     private(set) var lastError: String?
 
     var registeredCapabilities: [Capability] = []
@@ -95,6 +96,7 @@ final class ServerConnection {
         account = nil
         protocolVersion = nil
         serverVersion = nil
+        serverStartedAt = nil
         lastError = nil
     }
 
@@ -113,6 +115,7 @@ final class ServerConnection {
         account = nil
         protocolVersion = nil
         serverVersion = nil
+        serverStartedAt = nil
 
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 30
@@ -177,6 +180,9 @@ final class ServerConnection {
                 providerID = authOK.providerID
                 account = authOK.account
                 serverVersion = authOK.serverVersion
+                if let uptime = authOK.serverUptimeSeconds, uptime >= 0 {
+                    serverStartedAt = Date().addingTimeInterval(-uptime)
+                }
             }
 
             try await registerCapabilities(attemptID: attemptID)

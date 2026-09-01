@@ -201,6 +201,12 @@ private struct AgentSettingsView: View {
                 if let serverVersion = appState.connection.serverVersion {
                     LabeledContent("Server version", value: serverVersion)
                 }
+                if let serverStartedAt = appState.connection.serverStartedAt {
+                    LabeledContent("Uptime") {
+                        Text(serverStartedAt, style: .timer)
+                            .monospacedDigit()
+                    }
+                }
                 if let protocolVersion = appState.connection.protocolVersion {
                     LabeledContent("Protocol version", value: protocolVersion)
                 }
