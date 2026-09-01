@@ -49,6 +49,7 @@ struct ServerConnectionTests {
             connectionSettings: settings,
             sharingPreferences: SharingPreferences(defaults: defaults),
             identityPinning: IdentityPinningService(
+                connectionID: settings.connectionID,
                 secureStore: AuthenticationCredentialStore()
             )
         )

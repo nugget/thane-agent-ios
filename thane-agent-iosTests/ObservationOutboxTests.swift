@@ -4,7 +4,10 @@ import Testing
 
 @Suite("Observation outbox")
 struct ObservationOutboxTests {
-    private let identityID = "thane:ed25519:SHA256:primary"
+    private let scope = ObservationDeliveryScope(
+        connectionID: "connection-primary",
+        identityID: "thane:ed25519:SHA256:primary"
+    )
 
     @Test("Latest values coalesce by kind and survive reload")
     func coalescesAndReloads() async throws {
@@ -15,16 +18,16 @@ struct ObservationOutboxTests {
         let latest = try makeEvent(kind: .location, value: 2)
         let system = try makeEvent(kind: .systemContext, value: 3)
 
-        try await outbox.enqueue(first, for: identityID)
-        try await outbox.enqueue(latest, for: identityID)
-        try await outbox.enqueue(system, for: identityID)
+        try await outbox.enqueue(first, for: scope)
+        try await outbox.enqueue(latest, for: scope)
+        try await outbox.enqueue(system, for: scope)
 
-        let pending = try await outbox.pending(for: identityID)
+        let pending = try await outbox.pending(for: scope)
         #expect(pending.count == 2)
         #expect(pending.first(where: { $0.kind == .location })?.eventID == latest.eventID)
 
         let restored = ObservationOutbox(fileURL: fixture.fileURL)
-        let restoredPending = try await restored.pending(for: identityID)
+        let restoredPending = try await restored.pending(for: scope)
         #expect(restoredPending == pending)
     }
 
@@ -36,11 +39,11 @@ struct ObservationOutboxTests {
         let inFlight = try makeEvent(kind: .location, value: 1)
         let replacement = try makeEvent(kind: .location, value: 2)
 
-        try await outbox.enqueue(inFlight, for: identityID)
-        try await outbox.enqueue(replacement, for: identityID)
-        try await outbox.removeSent(Set([inFlight.eventID]), for: identityID)
+        try await outbox.enqueue(inFlight, for: scope)
+        try await outbox.enqueue(replacement, for: scope)
+        try await outbox.removeSent(Set([inFlight.eventID]), for: scope)
 
-        let pending = try await outbox.pending(for: identityID)
+        let pending = try await outbox.pending(for: scope)
         #expect(pending == [replacement])
     }
 
@@ -52,10 +55,10 @@ struct ObservationOutboxTests {
         let latest = try makeEvent(kind: .location, value: 2)
         let delayed = try makeEvent(kind: .location, value: 1)
 
-        try await outbox.enqueue(latest, for: identityID)
-        try await outbox.enqueue(delayed, for: identityID)
+        try await outbox.enqueue(latest, for: scope)
+        try await outbox.enqueue(delayed, for: scope)
 
-        #expect(try await outbox.pending(for: identityID) == [latest])
+        #expect(try await outbox.pending(for: scope) == [latest])
     }
 
     @Test("Withdrawal wins at an equal observation time")
@@ -81,11 +84,11 @@ struct ObservationOutboxTests {
             payload: try AnyCodable.fromEncodable(TestPayload(value: 2))
         )
 
-        try await outbox.enqueue(available, for: identityID)
-        try await outbox.enqueue(withdrawal, for: identityID)
-        try await outbox.enqueue(available, for: identityID)
+        try await outbox.enqueue(available, for: scope)
+        try await outbox.enqueue(withdrawal, for: scope)
+        try await outbox.enqueue(available, for: scope)
 
-        #expect(try await outbox.pending(for: identityID) == [withdrawal])
+        #expect(try await outbox.pending(for: scope) == [withdrawal])
     }
 
     @Test("A queue cannot be read or written under a different identity")
@@ -95,13 +98,22 @@ struct ObservationOutboxTests {
         let outbox = ObservationOutbox(fileURL: fixture.fileURL)
         let event = try makeEvent(kind: .location, value: 1)
 
-        try await outbox.enqueue(event, for: identityID)
+        try await outbox.enqueue(event, for: scope)
+
+        let otherIdentity = ObservationDeliveryScope(
+            connectionID: scope.connectionID,
+            identityID: "thane:ed25519:SHA256:other"
+        )
+        let otherConnection = ObservationDeliveryScope(
+            connectionID: "connection-other",
+            identityID: scope.identityID
+        )
 
         await #expect(throws: ObservationOutboxError.self) {
-            _ = try await outbox.pending(for: "thane:ed25519:SHA256:other")
+            _ = try await outbox.pending(for: otherIdentity)
         }
         await #expect(throws: ObservationOutboxError.self) {
-            try await outbox.enqueue(event, for: "thane:ed25519:SHA256:other")
+            try await outbox.enqueue(event, for: otherConnection)
         }
     }
 
@@ -114,15 +126,44 @@ struct ObservationOutboxTests {
         try legacyData.write(to: fixture.fileURL, options: .atomic)
 
         let outbox = ObservationOutbox(fileURL: fixture.fileURL)
-        let discardedCount = try await outbox.bind(to: identityID)
+        let discardedCount = try await outbox.bind(to: scope)
 
         #expect(discardedCount == 1)
-        #expect(try await outbox.pending(for: identityID).isEmpty)
+        #expect(try await outbox.pending(for: scope).isEmpty)
         let object = try #require(
             JSONSerialization.jsonObject(with: Data(contentsOf: fixture.fileURL)) as? [String: Any]
         )
-        #expect(object["identity_id"] as? String == identityID)
+        #expect(object["connection_id"] as? String == scope.connectionID)
+        #expect(object["identity_id"] as? String == scope.identityID)
         #expect((object["events"] as? [Any])?.isEmpty == true)
+    }
+
+    @Test("A legacy identity-scoped queue migrates into the matching connection profile")
+    func identityScopedQueueMigration() async throws {
+        let fixture = try OutboxFixture()
+        defer { fixture.cleanup() }
+        let event = try makeEvent(kind: .location, value: 1)
+        let eventObject = try JSONSerialization.jsonObject(
+            with: ObservationCoding.encoder().encode(event)
+        )
+        let legacyData = try JSONSerialization.data(withJSONObject: [
+            "schema_version": 1,
+            "identity_id": scope.identityID,
+            "events": [eventObject],
+        ])
+        try legacyData.write(to: fixture.fileURL, options: .atomic)
+
+        let outbox = ObservationOutbox(fileURL: fixture.fileURL)
+        let discardedCount = try await outbox.bind(to: scope)
+
+        #expect(discardedCount == 0)
+        #expect(try await outbox.pending(for: scope) == [event])
+        let object = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: fixture.fileURL)) as? [String: Any]
+        )
+        #expect(object["schema_version"] as? Int == 2)
+        #expect(object["connection_id"] as? String == scope.connectionID)
+        #expect(object["identity_id"] as? String == scope.identityID)
     }
 
     @Test("Explicitly discarding a queue allows a new identity without carrying data forward")
@@ -130,16 +171,19 @@ struct ObservationOutboxTests {
         let fixture = try OutboxFixture()
         defer { fixture.cleanup() }
         let outbox = ObservationOutbox(fileURL: fixture.fileURL)
-        try await outbox.enqueue(try makeEvent(kind: .location, value: 1), for: identityID)
+        try await outbox.enqueue(try makeEvent(kind: .location, value: 1), for: scope)
 
-        try await outbox.discardAll(for: identityID)
-        let newIdentityID = "thane:ed25519:SHA256:other"
+        try await outbox.discardAll(for: scope)
+        let newScope = ObservationDeliveryScope(
+            connectionID: "connection-other",
+            identityID: "thane:ed25519:SHA256:other"
+        )
         try await outbox.enqueue(
             try makeEvent(kind: .systemContext, value: 2),
-            for: newIdentityID
+            for: newScope
         )
 
-        let pending = try await outbox.pending(for: newIdentityID)
+        let pending = try await outbox.pending(for: newScope)
         #expect(pending.count == 1)
         #expect(pending.first?.kind == .systemContext)
     }
@@ -152,16 +196,16 @@ struct ObservationOutboxTests {
         let outbox = ObservationOutbox(fileURL: fixture.fileURL)
 
         await #expect(throws: ObservationOutboxError.self) {
-            _ = try await outbox.pending(for: identityID)
+            _ = try await outbox.pending(for: scope)
         }
 
         try await outbox.discardAll()
         #expect(!FileManager.default.fileExists(atPath: fixture.fileURL.path))
         try await outbox.enqueue(
             try makeEvent(kind: .location, value: 2),
-            for: identityID
+            for: scope
         )
-        #expect(try await outbox.pending(for: identityID).count == 1)
+        #expect(try await outbox.pending(for: scope).count == 1)
     }
 
     @Test("Withdrawal tombstones omit sensitive payloads")

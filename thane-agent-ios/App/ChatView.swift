@@ -137,16 +137,20 @@ private struct ConversationView: View {
             #"{"schema_version":1,"observed_at":"2026-08-30T19:22:31Z","instance":{"id":"thane:preview:aimee","name":"Aimée","identity_key":{"algorithm":"ed25519","fingerprint":"SHA256:previewidentity"},"channel_ca":{"algorithm":"x509-ed25519","fingerprint":"SHA256:previewca"}},"core":{"birth":{"commit":{"algorithm":"sha1","oid":"0123456789abcdef"},"asserted_at":"2026-07-01T12:00:00Z","time_assurance":"signed_claim","anchor":"operator"},"current_commit":{"algorithm":"sha1","oid":"fedcba9876543210"},"head":{"worktree_clean":true,"trust_file_change_count":0},"verification":{"admission":{"status":"verified","detail":"verified"},"head":{"status":"verified","detail":"verified"}}}}"#.utf8
         )
     )
+    let connectionSettings = ConnectionSettings(
+        defaults: UserDefaults(suiteName: "ChatViewPreview") ?? .standard,
+        credentialStore: PreviewCredentialStore()
+    )
     let appState = AppState(
-        connectionSettings: ConnectionSettings(
-            defaults: UserDefaults(suiteName: "ChatViewPreview") ?? .standard,
-            credentialStore: PreviewCredentialStore()
-        ),
+        connectionSettings: connectionSettings,
         sharingPreferences: SharingPreferences(
             defaults: UserDefaults(suiteName: "ChatViewPreview") ?? .standard
         ),
         identityPinning: {
-            let pinning = IdentityPinningService(secureStore: PreviewCredentialStore())
+            let pinning = IdentityPinningService(
+                connectionID: connectionSettings.connectionID,
+                secureStore: PreviewCredentialStore()
+            )
             try! pinning.pin(evidence)
             return pinning
         }(),

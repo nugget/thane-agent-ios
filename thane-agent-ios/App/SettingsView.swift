@@ -36,11 +36,6 @@ struct SettingsView: View {
             }
 
             Section("About") {
-                LabeledContent("Client ID") {
-                    Text(appState.connectionSettings.clientID)
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                }
                 LabeledContent("App version", value: appVersion)
             }
         }
@@ -119,7 +114,7 @@ private struct ConnectionListView: View {
                             showingRemovalConfirmation = true
                         }
                     } footer: {
-                        Text("This build supports one active agent connection. Each conversation and sharing policy is already keyed by the counterparty's stable identity.")
+                        Text("This build supports one active agent connection. Credentials, client identity, conversations, sharing policy, and queued observations are scoped to that relationship.")
                     }
                 }
                 .toolbar {
@@ -269,6 +264,18 @@ private struct ConnectionEditorView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+            }
+
+            Section {
+                LabeledContent("Pairwise Client ID") {
+                    Text(appState.connectionSettings.pairwiseClientID)
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                }
+            } header: {
+                Text("Connection Privacy")
+            } footer: {
+                Text("This random identifier is stable for reconnecting to this counterparty and is never reused for another agent connection.")
             }
 
             if let error = appState.displayedError {

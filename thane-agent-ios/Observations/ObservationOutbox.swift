@@ -10,16 +10,41 @@ nonisolated enum ObservationOutboxError: LocalizedError, Sendable {
         case .unavailable(let message):
             "Observation queue unavailable: \(message)"
         case .identityRequired:
-            "Observation queue requires a pinned Thane identity."
+            "Observation queue requires a connection and pinned Thane identity."
         case .identityMismatch:
-            "Observation queue belongs to a different Thane identity."
+            "Observation queue belongs to a different connection or Thane identity."
         }
     }
 }
 
 private nonisolated struct ObservationOutboxEnvelope: Codable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
+    let schemaVersion: Int
+    let connectionID: String
+    let identityID: String
+    let events: [ObservationEvent]
+
+    init(scope: ObservationDeliveryScope, events: [ObservationEvent]) {
+        schemaVersion = Self.currentSchemaVersion
+        connectionID = scope.connectionID
+        identityID = scope.identityID
+        self.events = events
+    }
+
+    var scope: ObservationDeliveryScope {
+        ObservationDeliveryScope(connectionID: connectionID, identityID: identityID)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case connectionID = "connection_id"
+        case identityID = "identity_id"
+        case events
+    }
+}
+
+private nonisolated struct LegacyObservationOutboxEnvelope: Codable {
     let schemaVersion: Int
     let identityID: String
     let events: [ObservationEvent]
@@ -34,17 +59,19 @@ private nonisolated struct ObservationOutboxEnvelope: Codable {
 actor ObservationOutbox {
     private let fileURL: URL
     private let storageURLResolved: Bool
-    private var identityID: String?
+    private var scope: ObservationDeliveryScope?
     private var eventsByKind: [ObservationKind: ObservationEvent] = [:]
     private var initializationError: ObservationOutboxError?
+    private var legacyIdentityID: String?
     private var legacyEventCount = 0
 
     init(fileURL: URL? = nil) {
         var resolvedURL = fileURL ?? URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("thane-observations-unavailable.json")
-        var loadedIdentityID: String?
+        var loadedScope: ObservationDeliveryScope?
         var loadedEvents: [ObservationKind: ObservationEvent] = [:]
         var loadError: ObservationOutboxError?
+        var loadedLegacyIdentityID: String?
         var loadedLegacyEventCount = 0
         var didResolveStorageURL = false
         do {
@@ -53,31 +80,34 @@ actor ObservationOutbox {
             if FileManager.default.fileExists(atPath: resolvedURL.path) {
                 let data = try Data(contentsOf: resolvedURL)
                 let events: [ObservationEvent]
-                do {
-                    let envelope = try ObservationCoding.decoder().decode(
-                        ObservationOutboxEnvelope.self,
-                        from: data
-                    )
-                    guard envelope.schemaVersion == ObservationOutboxEnvelope.currentSchemaVersion,
-                          !envelope.identityID.isEmpty else {
-                        throw ObservationOutboxError.unavailable(
-                            "The saved queue uses an unsupported storage schema."
-                        )
-                    }
-                    loadedIdentityID = envelope.identityID
+                if let envelope = try? ObservationCoding.decoder().decode(
+                    ObservationOutboxEnvelope.self,
+                    from: data
+                ), envelope.schemaVersion == ObservationOutboxEnvelope.currentSchemaVersion,
+                   !envelope.connectionID.isEmpty,
+                   !envelope.identityID.isEmpty {
+                    loadedScope = envelope.scope
                     events = envelope.events
-                } catch let error as ObservationOutboxError {
-                    throw error
-                } catch {
+                } else if let legacyEnvelope = try? ObservationCoding.decoder().decode(
+                    LegacyObservationOutboxEnvelope.self,
+                    from: data
+                ), legacyEnvelope.schemaVersion == 1,
+                   !legacyEnvelope.identityID.isEmpty {
+                    loadedLegacyIdentityID = legacyEnvelope.identityID
+                    events = legacyEnvelope.events
+                } else if let legacyEvents = try? ObservationCoding.decoder().decode(
+                    [ObservationEvent].self,
+                    from: data
+                ) {
                     // Version 1 of the app stored a bare event array without a
                     // recipient. Those events cannot safely be assigned to a
                     // newly pinned identity, so remember only the discard count.
-                    let legacyEvents = try ObservationCoding.decoder().decode(
-                        [ObservationEvent].self,
-                        from: data
-                    )
                     loadedLegacyEventCount = legacyEvents.count
                     events = []
+                } else {
+                    throw ObservationOutboxError.unavailable(
+                        "The saved queue is unreadable or uses an unsupported storage schema."
+                    )
                 }
                 for event in events {
                     guard let existing = loadedEvents[event.kind] else {
@@ -96,41 +126,51 @@ actor ObservationOutbox {
         }
         self.fileURL = resolvedURL
         storageURLResolved = didResolveStorageURL
-        identityID = loadedIdentityID
+        scope = loadedScope
         eventsByKind = loadedEvents
         initializationError = loadError
+        legacyIdentityID = loadedLegacyIdentityID
         legacyEventCount = loadedLegacyEventCount
     }
 
     @discardableResult
-    func bind(to identityID: String) throws -> Int {
+    func bind(to scope: ObservationDeliveryScope) throws -> Int {
         try Task.checkCancellation()
         try ensureAvailable()
-        guard !identityID.isEmpty else { throw ObservationOutboxError.identityRequired }
-        if let existingIdentityID = self.identityID {
-            guard existingIdentityID == identityID else {
+        guard !scope.connectionID.isEmpty, !scope.identityID.isEmpty else {
+            throw ObservationOutboxError.identityRequired
+        }
+        if let existingScope = self.scope {
+            guard existingScope == scope else {
                 throw ObservationOutboxError.identityMismatch
             }
             return 0
         }
+        if let legacyIdentityID,
+           legacyIdentityID != scope.identityID {
+            throw ObservationOutboxError.identityMismatch
+        }
 
         let discardedCount = legacyEventCount
-        let previousIdentityID = self.identityID
-        self.identityID = identityID
+        let previousScope = self.scope
+        let previousLegacyIdentityID = legacyIdentityID
+        self.scope = scope
+        self.legacyIdentityID = nil
         legacyEventCount = 0
         do {
             try persist()
         } catch {
-            self.identityID = previousIdentityID
+            self.scope = previousScope
+            legacyIdentityID = previousLegacyIdentityID
             legacyEventCount = discardedCount
             throw error
         }
         return discardedCount
     }
 
-    func enqueue(_ event: ObservationEvent, for identityID: String) throws {
+    func enqueue(_ event: ObservationEvent, for scope: ObservationDeliveryScope) throws {
         try Task.checkCancellation()
-        try bind(to: identityID)
+        try bind(to: scope)
         try Task.checkCancellation()
         let previous = eventsByKind[event.kind]
         if let previous, !Self.shouldReplace(previous, with: event) {
@@ -145,16 +185,16 @@ actor ObservationOutbox {
         }
     }
 
-    func pending(for identityID: String) throws -> [ObservationEvent] {
+    func pending(for scope: ObservationDeliveryScope) throws -> [ObservationEvent] {
         try ensureAvailable()
-        try requireIdentity(identityID)
+        try requireScope(scope)
         return eventsByKind.values.sorted { $0.kind.rawValue < $1.kind.rawValue }
     }
 
-    func removeSent(_ eventIDs: Set<UUID>, for identityID: String) throws {
+    func removeSent(_ eventIDs: Set<UUID>, for scope: ObservationDeliveryScope) throws {
         try Task.checkCancellation()
         try ensureAvailable()
-        try requireIdentity(identityID)
+        try requireScope(scope)
         let previous = eventsByKind
         eventsByKind = eventsByKind.filter { !eventIDs.contains($0.value.eventID) }
         do {
@@ -165,10 +205,14 @@ actor ObservationOutbox {
         }
     }
 
-    func discardAll(for identityID: String) throws {
+    func discardAll(for scope: ObservationDeliveryScope) throws {
         try ensureAvailable()
-        if let existingIdentityID = self.identityID,
-           existingIdentityID != identityID {
+        if let existingScope = self.scope,
+           existingScope != scope {
+            throw ObservationOutboxError.identityMismatch
+        }
+        if let legacyIdentityID,
+           legacyIdentityID != scope.identityID {
             throw ObservationOutboxError.identityMismatch
         }
 
@@ -176,11 +220,13 @@ actor ObservationOutbox {
     }
 
     func discardAll() throws {
-        let previousIdentityID = self.identityID
+        let previousScope = scope
         let previousEvents = eventsByKind
+        let previousLegacyIdentityID = legacyIdentityID
         let previousLegacyEventCount = legacyEventCount
-        self.identityID = nil
+        scope = nil
         eventsByKind = [:]
+        legacyIdentityID = nil
         legacyEventCount = 0
         do {
             if FileManager.default.fileExists(atPath: fileURL.path) {
@@ -190,8 +236,9 @@ actor ObservationOutbox {
                 initializationError = nil
             }
         } catch {
-            self.identityID = previousIdentityID
+            scope = previousScope
             eventsByKind = previousEvents
+            legacyIdentityID = previousLegacyIdentityID
             legacyEventCount = previousLegacyEventCount
             throw error
         }
@@ -203,10 +250,9 @@ actor ObservationOutbox {
             at: directory,
             withIntermediateDirectories: true
         )
-        guard let identityID else { throw ObservationOutboxError.identityRequired }
+        guard let scope else { throw ObservationOutboxError.identityRequired }
         let envelope = ObservationOutboxEnvelope(
-            schemaVersion: ObservationOutboxEnvelope.currentSchemaVersion,
-            identityID: identityID,
+            scope: scope,
             events: eventsByKind.values.sorted { $0.kind.rawValue < $1.kind.rawValue }
         )
         let data = try ObservationCoding.encoder().encode(envelope)
@@ -222,11 +268,11 @@ actor ObservationOutbox {
         }
     }
 
-    private func requireIdentity(_ identityID: String) throws {
-        guard let existingIdentityID = self.identityID else {
+    private func requireScope(_ scope: ObservationDeliveryScope) throws {
+        guard let existingScope = self.scope else {
             throw ObservationOutboxError.identityRequired
         }
-        guard existingIdentityID == identityID else {
+        guard existingScope == scope else {
             throw ObservationOutboxError.identityMismatch
         }
     }

@@ -115,6 +115,67 @@ struct AppStateIdentityBoundaryTests {
         fixture.appState.disconnect()
     }
 
+    @Test("Re-pinning the same counterparty preserves its pairwise client identity")
+    func sameCounterpartyPreservesPairwiseIdentity() async throws {
+        let evidence = try IdentityTestFixture.evidence()
+        let fixture = try AppIdentityFixture(
+            evidence: evidence,
+            pinnedEvidence: evidence
+        )
+        defer { fixture.cleanup() }
+        let clientID = fixture.appState.connectionSettings.pairwiseClientID
+
+        fixture.appState.connectUsingCurrentValues()
+        try await fixture.waitForIdentityRefresh()
+        await fixture.appState.forgetThane()
+        fixture.appState.pinPresentedIdentity()
+
+        #expect(fixture.appState.connectionSettings.pairwiseClientID == clientID)
+        #expect(
+            fixture.appState.connectionSettings.pairwiseCounterpartyID
+                == evidence.instance.id
+        )
+        fixture.appState.disconnect()
+    }
+
+    @Test("Rebinding a profile to a different counterparty rotates its pairwise client identity")
+    func differentCounterpartyRotatesPairwiseIdentity() async throws {
+        let pinnedEvidence = try IdentityTestFixture.evidence()
+        let otherEvidence = ThaneIdentityEvidence(
+            schemaVersion: pinnedEvidence.schemaVersion,
+            observedAt: pinnedEvidence.observedAt,
+            instance: ThaneInstanceIdentity(
+                id: "thane:ed25519:SHA256:other",
+                name: "other",
+                identityKey: PublicIdentityMaterial(
+                    algorithm: "ed25519",
+                    fingerprint: "SHA256:other"
+                ),
+                channelCA: pinnedEvidence.instance.channelCA
+            ),
+            core: pinnedEvidence.core
+        )
+        let fixture = try AppIdentityFixture(
+            evidence: otherEvidence,
+            pinnedEvidence: pinnedEvidence
+        )
+        defer { fixture.cleanup() }
+        let clientID = fixture.appState.connectionSettings.pairwiseClientID
+
+        fixture.appState.connectUsingCurrentValues()
+        try await fixture.waitForIdentityRefresh()
+        #expect(fixture.appState.identityContinuity == .mismatch)
+        await fixture.appState.forgetThane()
+        fixture.appState.pinPresentedIdentity()
+
+        #expect(fixture.appState.connectionSettings.pairwiseClientID != clientID)
+        #expect(
+            fixture.appState.connectionSettings.pairwiseCounterpartyID
+                == otherEvidence.instance.id
+        )
+        fixture.appState.disconnect()
+    }
+
     @Test("Removing a connection deletes its identity-scoped local state")
     func removingConnectionDeletesScopedState() async throws {
         let evidence = try IdentityTestFixture.evidence()
@@ -124,12 +185,18 @@ struct AppStateIdentityBoundaryTests {
         )
         defer { fixture.cleanup() }
         let originalConnectionID = fixture.appState.connectionSettings.connectionID
+        let originalClientID = fixture.appState.connectionSettings.pairwiseClientID
 
         fixture.appState.setSystemCategory(.regional, enabled: true)
         await fixture.appState.removeConnection()
 
         #expect(fixture.appState.configuredConnections.isEmpty)
         #expect(fixture.appState.connectionSettings.connectionID != originalConnectionID)
+        #expect(fixture.appState.connectionSettings.pairwiseClientID != originalClientID)
+        #expect(
+            fixture.appState.identityPinning.connectionID
+                == fixture.appState.connectionSettings.connectionID
+        )
         #expect(fixture.appState.connectionSettings.urlString.isEmpty)
         #expect(fixture.appState.tokenInput.isEmpty)
         #expect(fixture.appState.identityPinning.pin == nil)
@@ -168,13 +235,18 @@ private final class AppIdentityFixture {
             .appendingPathComponent(suite, isDirectory: true)
         try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
 
-        let tokenStore = AppIdentitySecureStore(values: ["thane-api-token": "secret"])
+        let tokenStore = AppIdentitySecureStore(values: [
+            ConnectionSecurityScope.legacyTokenAccount: "secret",
+        ])
+        let settings = ConnectionSettings(defaults: defaults, credentialStore: tokenStore)
         let pinStore = AppIdentitySecureStore()
-        let pinning = IdentityPinningService(secureStore: pinStore)
+        let pinning = IdentityPinningService(
+            connectionID: settings.connectionID,
+            secureStore: pinStore
+        )
         if let pinnedEvidence {
             try pinning.pin(pinnedEvidence)
         }
-        let settings = ConnectionSettings(defaults: defaults, credentialStore: tokenStore)
         settings.urlString = "https://thane.example"
         settings.isEnabled = connectionEnabled
         let publisher = ObservationPublisher(

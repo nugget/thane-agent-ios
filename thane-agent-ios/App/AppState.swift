@@ -28,9 +28,16 @@ final class AppState {
         sharingPreferences: SharingPreferences = SharingPreferences(),
         observationPublisher: ObservationPublisher = ObservationPublisher(),
         identityService: IdentityService = IdentityService(),
-        identityPinning: IdentityPinningService = IdentityPinningService(),
+        identityPinning: IdentityPinningService? = nil,
         conversationStore: ConversationStore = ConversationStore()
     ) {
+        let identityPinning = identityPinning ?? IdentityPinningService(
+            connectionID: connectionSettings.connectionID
+        )
+        precondition(
+            identityPinning.connectionID == connectionSettings.connectionID,
+            "Identity storage must use the active connection profile scope."
+        )
         self.appPreferences = appPreferences
         self.connectionSettings = connectionSettings
         self.sharingPreferences = sharingPreferences
@@ -38,6 +45,9 @@ final class AppState {
         self.identityService = identityService
         self.identityPinning = identityPinning
         self.conversationStore = conversationStore
+        if let pinnedCounterpartyID = identityPinning.pin?.identityID {
+            connectionSettings.bindPairwiseClientID(to: pinnedCounterpartyID)
+        }
         sharingPreferences.scope(to: identityPinning.pin?.identityID)
 
         let connection = ServerConnection()
@@ -282,6 +292,7 @@ final class AppState {
         }
         do {
             try identityPinning.pin(evidence)
+            connectionSettings.bindPairwiseClientID(to: evidence.instance.id)
         } catch {
             configurationError = error.localizedDescription
             return
@@ -319,6 +330,7 @@ final class AppState {
             applySharingScope(nil)
             tokenInput = ""
             connectionSettings.removeConfiguration()
+            try identityPinning.changeScope(to: connectionSettings.connectionID)
             suspendObservationDelivery()
         } catch {
             configurationError = error.localizedDescription
@@ -389,12 +401,12 @@ final class AppState {
     }
 
     private func configureObservationPublisher() {
-        guard let pin = identityPinning.pin else {
+        guard identityPinning.pin != nil else {
             observationPublisher.configure(
                 baseURL: nil,
                 token: nil,
                 clientID: "",
-                identityID: nil
+                deliveryScope: nil
             )
             return
         }
@@ -404,15 +416,15 @@ final class AppState {
                 baseURL: nil,
                 token: nil,
                 clientID: "",
-                identityID: pin.identityID
+                deliveryScope: observationDeliveryScope
             )
             return
         }
         observationPublisher.configure(
             baseURL: connectionSettings.serverURL,
             token: tokenInput,
-            clientID: connectionSettings.clientID,
-            identityID: pin.identityID
+            clientID: connectionSettings.pairwiseClientID,
+            deliveryScope: observationDeliveryScope
         )
     }
 
@@ -461,7 +473,7 @@ final class AppState {
         connection.connect(
             url: url,
             token: token,
-            clientID: connectionSettings.clientID,
+            clientID: connectionSettings.pairwiseClientID,
             clientName: "Thane for iOS"
         )
     }
@@ -476,8 +488,17 @@ final class AppState {
             baseURL: nil,
             token: nil,
             clientID: "",
-            identityID: identityPinning.pin?.identityID
+            deliveryScope: observationDeliveryScope
         )
+    }
+
+    private var observationDeliveryScope: ObservationDeliveryScope? {
+        identityPinning.pin.map {
+            ObservationDeliveryScope(
+                connectionID: connectionSettings.connectionID,
+                identityID: $0.identityID
+            )
+        }
     }
 
     private func publishSystemContextIfEnabled(withdrawIfDisabled: Bool = false) {
