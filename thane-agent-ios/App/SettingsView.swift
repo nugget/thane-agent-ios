@@ -5,6 +5,19 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section("Companion App") {
+                NavigationLink {
+                    AppSettingsView()
+                } label: {
+                    LabeledContent {
+                        Text(appState.appPreferences.appearance.title)
+                            .foregroundStyle(.secondary)
+                    } label: {
+                        Label("App Settings", systemImage: "slider.horizontal.3")
+                    }
+                }
+            }
+
             Section {
                 NavigationLink {
                     ConnectionListView()
@@ -22,7 +35,7 @@ struct SettingsView: View {
                 Text("Adding, replacing, or removing an agent connection is uncommon. Sharing and identity remain available from the agent's profile in Chats.")
             }
 
-            Section("Companion") {
+            Section("About") {
                 LabeledContent("Client ID") {
                     Text(appState.connectionSettings.clientID)
                         .font(.caption.monospaced())
@@ -46,6 +59,42 @@ struct SettingsView: View {
         case let (version?, nil): version
         case let (nil, build?): build
         case (nil, nil): "Unknown"
+        }
+    }
+}
+
+private struct AppSettingsView: View {
+    @Environment(AppState.self) private var appState
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("Appearance", selection: Binding(
+                    get: { appState.appPreferences.appearance },
+                    set: { appState.appPreferences.appearance = $0 }
+                )) {
+                    ForEach(AppAppearance.allCases) { appearance in
+                        Label(appearance.title, systemImage: appearance.systemImage)
+                            .tag(appearance)
+                    }
+                }
+                .pickerStyle(.inline)
+            } header: {
+                Text("Appearance")
+            } footer: {
+                Text("Automatic follows this iPhone's current Light or Dark appearance.")
+            }
+        }
+        .navigationTitle("App Settings")
+    }
+}
+
+private extension AppAppearance {
+    var systemImage: String {
+        switch self {
+        case .automatic: "circle.lefthalf.filled"
+        case .light: "sun.max"
+        case .dark: "moon"
         }
     }
 }

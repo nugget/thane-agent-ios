@@ -6,6 +6,7 @@ private enum AppSection: Hashable {
 }
 
 struct RootView: View {
+    @Environment(AppState.self) private var appState
     @State private var selection: AppSection = .chats
 
     var body: some View {
@@ -25,6 +26,15 @@ struct RootView: View {
             }
         }
         .tabViewStyle(.sidebarAdaptable)
+        .preferredColorScheme(preferredColorScheme)
+    }
+
+    private var preferredColorScheme: ColorScheme? {
+        switch appState.appPreferences.appearance {
+        case .automatic: nil
+        case .light: .light
+        case .dark: .dark
+        }
     }
 }
 

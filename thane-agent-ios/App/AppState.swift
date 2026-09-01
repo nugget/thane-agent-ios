@@ -6,6 +6,7 @@ import UIKit
 @Observable
 @MainActor
 final class AppState {
+    let appPreferences: AppPreferences
     let connectionSettings: ConnectionSettings
     let sharingPreferences: SharingPreferences
     let connection: ServerConnection
@@ -22,6 +23,7 @@ final class AppState {
     private let systemContextService: SystemContextService
 
     init(
+        appPreferences: AppPreferences = AppPreferences(),
         connectionSettings: ConnectionSettings = ConnectionSettings(),
         sharingPreferences: SharingPreferences = SharingPreferences(),
         observationPublisher: ObservationPublisher = ObservationPublisher(),
@@ -29,6 +31,7 @@ final class AppState {
         identityPinning: IdentityPinningService = IdentityPinningService(),
         conversationStore: ConversationStore = ConversationStore()
     ) {
+        self.appPreferences = appPreferences
         self.connectionSettings = connectionSettings
         self.sharingPreferences = sharingPreferences
         self.observationPublisher = observationPublisher
