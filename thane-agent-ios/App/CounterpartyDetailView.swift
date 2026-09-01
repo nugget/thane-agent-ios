@@ -2,8 +2,6 @@ import SwiftUI
 
 struct CounterpartyDetailView: View {
     @Environment(AppState.self) private var appState
-    @State private var showingIdentity = false
-    @State private var showingPin = false
 
     let counterparty: ThaneCounterparty
 
@@ -21,16 +19,6 @@ struct CounterpartyDetailView: View {
         }
         .background(Color(uiColor: .systemGroupedBackground))
         .navigationTitle(counterparty.displayName)
-        .sheet(isPresented: $showingIdentity) {
-            if let evidence = appState.presentedIdentity {
-                IdentityEvidenceView(evidence: evidence)
-            }
-        }
-        .sheet(isPresented: $showingPin) {
-            if let pin = appState.identityPinning.pin {
-                IdentityPinView(pin: pin)
-            }
-        }
     }
 
     @ViewBuilder
@@ -38,12 +26,16 @@ struct CounterpartyDetailView: View {
         AppCard(title: "Identity") {
             if let evidence = appState.presentedIdentity,
                evidence.instance.id == counterparty.id {
-                IdentitySummaryButton(
-                    evidence: evidence,
-                    status: appState.identityStatusLabel
-                ) {
-                    showingIdentity = true
+                NavigationLink {
+                    IdentityEvidenceView(evidence: evidence)
+                } label: {
+                    IdentitySummary(
+                        evidence: evidence,
+                        status: appState.identityStatusLabel
+                    )
                 }
+                .buttonStyle(.plain)
+                .accessibilityHint("Shows cryptographic identity and core evidence")
 
                 switch appState.identityContinuity {
                 case .presented:
@@ -52,7 +44,11 @@ struct CounterpartyDetailView: View {
                     Text("Private requests and observation uploads remain off until you pin this identity on this iPhone.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Button("Review & Pin") { showingIdentity = true }
+                    NavigationLink {
+                        IdentityEvidenceView(evidence: evidence)
+                    } label: {
+                        Text("Review & Pin")
+                    }
                         .buttonStyle(.borderedProminent)
                 case .mismatch:
                     Label("Private delivery blocked", systemImage: "exclamationmark.shield.fill")
@@ -83,12 +79,22 @@ struct CounterpartyDetailView: View {
                 }
             } else if let pin = appState.identityPinning.pin,
                       pin.identityID == counterparty.id {
-                PinnedIdentitySummaryButton(
-                    pin: pin,
-                    status: appState.identityStatusLabel
-                ) {
-                    showingPin = true
+                NavigationLink {
+                    IdentityPinView(pin: pin)
+                } label: {
+                    HStack {
+                        PinnedIdentitySummary(
+                            pin: pin,
+                            status: appState.identityStatusLabel
+                        )
+                        Image(systemName: "chevron.right")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityHint("Shows the identity pinned on this iPhone")
 
                 if appState.identityService.isRefreshing {
                     HStack(spacing: 12) {

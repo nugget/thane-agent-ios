@@ -3,8 +3,6 @@ import SwiftUI
 
 struct SharingView: View {
     @Environment(AppState.self) private var appState
-    @State private var showingIdentity = false
-    @State private var showingPin = false
 
     let counterparty: ThaneCounterparty
 
@@ -21,24 +19,14 @@ struct SharingView: View {
         }
         .background(Color(uiColor: .systemGroupedBackground))
         .navigationTitle("Sharing with \(counterparty.displayName)")
-        .sheet(isPresented: $showingIdentity) {
-            if let evidence = appState.presentedIdentity,
-               evidence.instance.id == counterparty.id {
-                IdentityEvidenceView(evidence: evidence)
-            }
-        }
-        .sheet(isPresented: $showingPin) {
-            if let pin = appState.identityPinning.pin {
-                IdentityPinView(pin: pin)
-            }
-        }
     }
 
     private var recipientCard: some View {
         AppCard(title: "Recipient") {
-            if let evidence = appState.presentedIdentity {
-                Button {
-                    showingIdentity = true
+            if let evidence = appState.presentedIdentity,
+               evidence.instance.id == counterparty.id {
+                NavigationLink {
+                    IdentityEvidenceView(evidence: evidence)
                 } label: {
                     HStack(spacing: 12) {
                         ThaneIdentityMark(identityID: evidence.instance.id, size: 40)
@@ -70,12 +58,22 @@ struct SharingView: View {
                 }
             } else if let pin = appState.identityPinning.pin,
                       pin.identityID == counterparty.id {
-                PinnedIdentitySummaryButton(
-                    pin: pin,
-                    status: appState.identityStatusLabel
-                ) {
-                    showingPin = true
+                NavigationLink {
+                    IdentityPinView(pin: pin)
+                } label: {
+                    HStack {
+                        PinnedIdentitySummary(
+                            pin: pin,
+                            status: appState.identityStatusLabel
+                        )
+                        Image(systemName: "chevron.right")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityHint("Shows the identity pinned on this iPhone")
                 Text(pinnedRecipientDetail)
                     .font(.caption)
                     .foregroundStyle(.secondary)

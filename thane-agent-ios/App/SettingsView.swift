@@ -19,20 +19,25 @@ struct SettingsView: View {
             }
 
             Section {
-                NavigationLink {
-                    ConnectionListView()
-                } label: {
-                    LabeledContent {
-                        Text(connectionCountLabel)
-                            .foregroundStyle(.secondary)
+                if appState.configuredConnections.isEmpty {
+                    NavigationLink {
+                        AgentSettingsView()
                     } label: {
-                        Label("Connections", systemImage: "person.2.crop.square.stack")
+                        Label("Add Agent", systemImage: "person.crop.circle.badge.plus")
+                    }
+                } else {
+                    ForEach(appState.configuredConnections) { connection in
+                        NavigationLink {
+                            AgentSettingsView()
+                        } label: {
+                            ConnectionRow(connection: connection)
+                        }
                     }
                 }
             } header: {
                 Text("Agents")
             } footer: {
-                Text("Adding, replacing, or removing an agent connection is uncommon. Sharing and identity remain available from the agent's profile in Chats.")
+                Text("Each agent owns its identity, sharing policy, and connection settings. Adding or removing a connection stays within that agent's settings.")
             }
 
             Section("About") {
@@ -40,10 +45,6 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("Settings")
-    }
-
-    private var connectionCountLabel: String {
-        appState.hasConnectionConfiguration ? "1 configured" : "None"
     }
 
     private var appVersion: String {
@@ -94,73 +95,6 @@ private extension AppAppearance {
     }
 }
 
-private struct ConnectionListView: View {
-    @Environment(AppState.self) private var appState
-    @State private var showingRemovalConfirmation = false
-
-    var body: some View {
-        Group {
-            if appState.hasConnectionConfiguration {
-                List {
-                    Section {
-                        ForEach(appState.configuredConnections) { connection in
-                            NavigationLink {
-                                ConnectionEditorView()
-                            } label: {
-                                ConnectionRow(connection: connection)
-                            }
-                        }
-                        .onDelete { _ in
-                            showingRemovalConfirmation = true
-                        }
-                    } footer: {
-                        Text("This build supports one active agent connection. Credentials, client identity, conversations, sharing policy, and queued observations are scoped to that relationship.")
-                    }
-                }
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        EditButton()
-                    }
-                }
-            } else {
-                ContentUnavailableView {
-                    Label("No Connections", systemImage: "person.crop.circle.badge.plus")
-                } description: {
-                    Text("Add the agent this iPhone should communicate with.")
-                } actions: {
-                    NavigationLink("Add Agent") {
-                        ConnectionEditorView()
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-            }
-        }
-        .navigationTitle("Agent Connections")
-        .toolbar {
-            if !appState.hasConnectionConfiguration {
-                ToolbarItem(placement: .topBarTrailing) {
-                    NavigationLink {
-                        ConnectionEditorView()
-                    } label: {
-                        Label("Add Agent", systemImage: "plus")
-                    }
-                }
-            }
-        }
-        .confirmationDialog(
-            "Remove this agent connection?",
-            isPresented: $showingRemovalConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button("Remove Connection", role: .destructive) {
-                Task { await appState.removeConnection() }
-            }
-        } message: {
-            Text("The API token, identity pin, sharing choices, and queued observations for this agent will be removed from this iPhone.")
-        }
-    }
-}
-
 private struct ConnectionRow: View {
     @Environment(AppState.self) private var appState
 
@@ -201,7 +135,7 @@ private struct ConnectionRow: View {
     }
 }
 
-private struct ConnectionEditorView: View {
+private struct AgentSettingsView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
     @State private var urlString = ""
@@ -214,22 +148,42 @@ private struct ConnectionEditorView: View {
     var body: some View {
         Form {
             if let counterparty = appState.counterparty {
-                Section("Counterparty") {
+                Section("Agent") {
+                    HStack(spacing: 12) {
+                        ThaneIdentityMark(identityID: counterparty.id, size: 44)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(counterparty.displayName)
+                                .font(.headline)
+                            Text(counterparty.shortFingerprint)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                            Text(appState.identityStatusLabel)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section("Information & Access") {
                     NavigationLink {
-                        CounterpartyDetailView(counterparty: counterparty)
+                        identityDetail(for: counterparty)
                     } label: {
-                        HStack(spacing: 12) {
-                            ThaneIdentityMark(identityID: counterparty.id, size: 44)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(counterparty.displayName)
-                                    .font(.headline)
-                                Text(counterparty.shortFingerprint)
-                                    .font(.caption.monospaced())
-                                    .foregroundStyle(.secondary)
-                                Text(appState.identityStatusLabel)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
+                        LabeledContent {
+                            Text(appState.identityStatusLabel)
+                                .foregroundStyle(.secondary)
+                        } label: {
+                            Label("Identity & Trust", systemImage: "person.badge.shield.checkmark")
+                        }
+                    }
+
+                    NavigationLink {
+                        SharingView(counterparty: counterparty)
+                    } label: {
+                        LabeledContent {
+                            Text(sharingSummary(for: counterparty))
+                                .foregroundStyle(.secondary)
+                        } label: {
+                            Label("Shared Information", systemImage: "hand.raised.fill")
                         }
                     }
                 }
@@ -327,7 +281,7 @@ private struct ConnectionEditorView: View {
                 }
             }
         }
-        .navigationTitle(appState.counterparty?.displayName ?? "New Agent")
+        .navigationTitle(appState.counterparty == nil ? "Add Agent" : "Agent Settings")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: loadValuesIfNeeded)
         .confirmationDialog(
@@ -395,6 +349,33 @@ private struct ConnectionEditorView: View {
         appState.connectionSettings.urlString = urlString
         appState.tokenInput = token
         appState.connectUsingCurrentValues()
+    }
+
+    @ViewBuilder
+    private func identityDetail(for counterparty: ThaneCounterparty) -> some View {
+        if let evidence = appState.presentedIdentity,
+           evidence.instance.id == counterparty.id {
+            IdentityEvidenceView(evidence: evidence)
+        } else if let pin = appState.identityPinning.pin,
+                  pin.identityID == counterparty.id {
+            IdentityPinView(pin: pin)
+        } else {
+            ContentUnavailableView(
+                "Identity Unavailable",
+                systemImage: "person.badge.shield.checkmark",
+                description: Text("No current or pinned identity evidence is available for this agent.")
+            )
+            .navigationTitle("Identity")
+        }
+    }
+
+    private func sharingSummary(for counterparty: ThaneCounterparty) -> String {
+        guard appState.sharingPreferences.counterpartyID == counterparty.id else {
+            return "Unavailable"
+        }
+        let systemCount = appState.sharingPreferences.enabledSystemCategories.count
+        let count = systemCount + (appState.sharingPreferences.locationEnabled ? 1 : 0)
+        return count == 0 ? "Nothing enabled" : "\(count) source\(count == 1 ? "" : "s") enabled"
     }
 }
 

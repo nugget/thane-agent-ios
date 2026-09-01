@@ -33,40 +33,35 @@ struct ThaneIdentityMark: View {
     }
 }
 
-struct IdentitySummaryButton: View {
+struct IdentitySummary: View {
     let evidence: ThaneIdentityEvidence
     var status: String = "Presented identity"
-    let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 14) {
-                ThaneIdentityMark(identityID: evidence.instance.id)
+        HStack(spacing: 14) {
+            ThaneIdentityMark(identityID: evidence.instance.id)
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(evidence.instance.name)
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(.primary)
-                    Text(evidence.instance.shortFingerprint)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                    Text(status)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.tertiary)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(evidence.instance.name)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Text(evidence.instance.shortFingerprint)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .contentShape(Rectangle())
+
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.tertiary)
         }
-        .buttonStyle(.plain)
+        .contentShape(Rectangle())
         .accessibilityLabel(
             "Agent identity \(evidence.instance.name), fingerprint \(evidence.instance.shortFingerprint), \(status)"
         )
-        .accessibilityHint("Shows cryptographic identity and core evidence")
     }
 }
 
@@ -97,78 +92,50 @@ struct PinnedIdentitySummary: View {
     }
 }
 
-struct PinnedIdentitySummaryButton: View {
-    let pin: ThaneIdentityPin
-    let status: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack {
-                PinnedIdentitySummary(pin: pin, status: status)
-                Image(systemName: "chevron.right")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityHint("Shows the identity pinned on this iPhone")
-    }
-}
-
 struct IdentityPinView: View {
     let pin: ThaneIdentityPin
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    VStack(spacing: 12) {
-                        ThaneIdentityMark(identityID: pin.identityID, size: 84)
-                        Text(pin.nameAtPinning)
-                            .font(.title2.weight(.semibold))
-                        Text(pin.shortFingerprint)
-                            .font(.subheadline.monospaced())
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-
-                    Text("This is the identity material recorded in this iPhone's protected Keychain. Matching does not independently prove who operates this agent.")
-                        .font(.footnote)
+        List {
+            Section {
+                VStack(spacing: 12) {
+                    ThaneIdentityMark(identityID: pin.identityID, size: 84)
+                    Text(pin.nameAtPinning)
+                        .font(.title2.weight(.semibold))
+                    Text(pin.shortFingerprint)
+                        .font(.subheadline.monospaced())
                         .foregroundStyle(.secondary)
                 }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
 
-                Section("Pinned stable identity") {
-                    EvidenceValueRow(label: "Instance ID", value: pin.identityID)
-                    EvidenceValueRow(
-                        label: "Signing key · \(pin.identityKey.algorithm)",
-                        value: pin.identityKey.fingerprint
-                    )
-                    EvidenceValueRow(
-                        label: "Channel CA · \(pin.channelCA.algorithm)",
-                        value: pin.channelCA.fingerprint
-                    )
-                }
-
-                Section {
-                    LabeledContent(
-                        "Pinned on this iPhone",
-                        value: pin.pinnedAt.formatted(date: .abbreviated, time: .standard)
-                    )
-                    LabeledContent("Pin schema", value: pin.schemaVersion.formatted())
-                }
+                Text("This is the identity material recorded in this iPhone's protected Keychain. Matching does not independently prove who operates this agent.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
-            .navigationTitle(pin.nameAtPinning)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
+
+            Section("Pinned stable identity") {
+                EvidenceValueRow(label: "Instance ID", value: pin.identityID)
+                EvidenceValueRow(
+                    label: "Signing key · \(pin.identityKey.algorithm)",
+                    value: pin.identityKey.fingerprint
+                )
+                EvidenceValueRow(
+                    label: "Channel CA · \(pin.channelCA.algorithm)",
+                    value: pin.channelCA.fingerprint
+                )
+            }
+
+            Section {
+                LabeledContent(
+                    "Pinned on this iPhone",
+                    value: pin.pinnedAt.formatted(date: .abbreviated, time: .standard)
+                )
+                LabeledContent("Pin schema", value: pin.schemaVersion.formatted())
             }
         }
+        .navigationTitle("Pinned Identity")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -178,131 +145,124 @@ struct IdentityEvidenceView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    VStack(spacing: 12) {
-                        ThaneIdentityMark(identityID: evidence.instance.id, size: 84)
-                        Text(evidence.instance.name)
-                            .font(.title2.weight(.semibold))
-                        Text(evidence.instance.shortFingerprint)
-                            .font(.subheadline.monospaced())
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-
-                    Text(continuityExplanation)
-                        .font(.footnote)
+        List {
+            Section {
+                VStack(spacing: 12) {
+                    ThaneIdentityMark(identityID: evidence.instance.id, size: 84)
+                    Text(evidence.instance.name)
+                        .font(.title2.weight(.semibold))
+                    Text(evidence.instance.shortFingerprint)
+                        .font(.subheadline.monospaced())
                         .foregroundStyle(.secondary)
                 }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
 
-                Section("Continuity on this iPhone") {
-                    Label(continuityTitle, systemImage: continuitySymbol)
-                        .foregroundStyle(continuityColor)
-
-                    if appState.identityContinuity == .presented {
-                        Button("Pin \(evidence.instance.name) & Connect") {
-                            appState.pinPresentedIdentity()
-                            if appState.identityContinuity.permitsPrivateDelivery {
-                                dismiss()
-                            }
-                        }
-                    } else if let pin = appState.identityPinning.pin {
-                        LabeledContent(
-                            "Pinned on this iPhone",
-                            value: pin.pinnedAt.formatted(date: .abbreviated, time: .shortened)
-                        )
-                        if appState.identityContinuity == .mismatch {
-                            EvidenceValueRow(label: "Pinned instance ID", value: pin.identityID)
-                            EvidenceValueRow(
-                                label: "Pinned signing key · \(pin.identityKey.algorithm)",
-                                value: pin.identityKey.fingerprint
-                            )
-                            EvidenceValueRow(
-                                label: "Pinned channel CA · \(pin.channelCA.algorithm)",
-                                value: pin.channelCA.fingerprint
-                            )
-                        }
-                    }
-
-                    Text("A pin records the stable instance ID, signing-key fingerprint, and channel-CA fingerprint in this iPhone's protected Keychain. It does not independently prove who operates this agent.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("Stable identity") {
-                    EvidenceValueRow(label: "Instance ID", value: evidence.instance.id)
-                    EvidenceValueRow(
-                        label: "Signing key · \(evidence.instance.identityKey.algorithm)",
-                        value: evidence.instance.identityKey.fingerprint
-                    )
-                    EvidenceValueRow(
-                        label: "Channel CA · \(evidence.instance.channelCA.algorithm)",
-                        value: evidence.instance.channelCA.fingerprint
-                    )
-
-                    Text("The visual mark is derived from the stable instance ID as a recognition aid; it is not proof by itself.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("Core origin") {
-                    LabeledContent("Anchor posture", value: anchorLabel)
-                    EvidenceValueRow(
-                        label: "Birth commit · \(evidence.core.birth.commit.algorithm)",
-                        value: evidence.core.birth.commit.oid
-                    )
-                    LabeledContent(
-                        "Asserted birth time",
-                        value: evidence.core.birth.assertedAt.formatted(date: .abbreviated, time: .standard)
-                    )
-
-                    Text("The birth time is a claim covered by the signed birth commit. It is not an independently witnessed timestamp.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("Current core") {
-                    EvidenceValueRow(
-                        label: "Current commit · \(evidence.core.currentCommit.algorithm)",
-                        value: evidence.core.currentCommit.oid
-                    )
-                    LabeledContent(
-                        "Tracked worktree",
-                        value: evidence.core.head.worktreeClean ? "Clean" : "Modified"
-                    )
-                    LabeledContent(
-                        "Trust-file revisions",
-                        value: evidence.core.head.trustFileChangeCount.formatted()
-                    )
-                }
-
-                Section("Reported core verification") {
-                    VerificationRow(title: "Birth admission", check: evidence.core.verification.admission)
-                    VerificationRow(title: "Current HEAD", check: evidence.core.verification.head)
-
-                    Text("These are checks reported from the running agent's core. They are evidence for the operator to evaluate, not a universal trust verdict.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section {
-                    LabeledContent(
-                        "Observed",
-                        value: evidence.observedAt.formatted(date: .abbreviated, time: .standard)
-                    )
-                    LabeledContent("Schema", value: evidence.schemaVersion.formatted())
-                }
+                Text(continuityExplanation)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
-            .navigationTitle(evidence.instance.name)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+
+            Section("Continuity on this iPhone") {
+                Label(continuityTitle, systemImage: continuitySymbol)
+                    .foregroundStyle(continuityColor)
+
+                if appState.identityContinuity == .presented {
+                    Button("Pin \(evidence.instance.name) & Connect") {
+                        appState.pinPresentedIdentity()
+                        if appState.identityContinuity.permitsPrivateDelivery {
+                            dismiss()
+                        }
+                    }
+                } else if let pin = appState.identityPinning.pin {
+                    LabeledContent(
+                        "Pinned on this iPhone",
+                        value: pin.pinnedAt.formatted(date: .abbreviated, time: .shortened)
+                    )
+                    if appState.identityContinuity == .mismatch {
+                        EvidenceValueRow(label: "Pinned instance ID", value: pin.identityID)
+                        EvidenceValueRow(
+                            label: "Pinned signing key · \(pin.identityKey.algorithm)",
+                            value: pin.identityKey.fingerprint
+                        )
+                        EvidenceValueRow(
+                            label: "Pinned channel CA · \(pin.channelCA.algorithm)",
+                            value: pin.channelCA.fingerprint
+                        )
+                    }
                 }
+
+                Text("A pin records the stable instance ID, signing-key fingerprint, and channel-CA fingerprint in this iPhone's protected Keychain. It does not independently prove who operates this agent.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Stable identity") {
+                EvidenceValueRow(label: "Instance ID", value: evidence.instance.id)
+                EvidenceValueRow(
+                    label: "Signing key · \(evidence.instance.identityKey.algorithm)",
+                    value: evidence.instance.identityKey.fingerprint
+                )
+                EvidenceValueRow(
+                    label: "Channel CA · \(evidence.instance.channelCA.algorithm)",
+                    value: evidence.instance.channelCA.fingerprint
+                )
+
+                Text("The visual mark is derived from the stable instance ID as a recognition aid; it is not proof by itself.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Core origin") {
+                LabeledContent("Anchor posture", value: anchorLabel)
+                EvidenceValueRow(
+                    label: "Birth commit · \(evidence.core.birth.commit.algorithm)",
+                    value: evidence.core.birth.commit.oid
+                )
+                LabeledContent(
+                    "Asserted birth time",
+                    value: evidence.core.birth.assertedAt.formatted(date: .abbreviated, time: .standard)
+                )
+
+                Text("The birth time is a claim covered by the signed birth commit. It is not an independently witnessed timestamp.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Current core") {
+                EvidenceValueRow(
+                    label: "Current commit · \(evidence.core.currentCommit.algorithm)",
+                    value: evidence.core.currentCommit.oid
+                )
+                LabeledContent(
+                    "Tracked worktree",
+                    value: evidence.core.head.worktreeClean ? "Clean" : "Modified"
+                )
+                LabeledContent(
+                    "Trust-file revisions",
+                    value: evidence.core.head.trustFileChangeCount.formatted()
+                )
+            }
+
+            Section("Reported core verification") {
+                VerificationRow(title: "Birth admission", check: evidence.core.verification.admission)
+                VerificationRow(title: "Current HEAD", check: evidence.core.verification.head)
+
+                Text("These are checks reported from the running agent's core. They are evidence for the operator to evaluate, not a universal trust verdict.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                LabeledContent(
+                    "Observed",
+                    value: evidence.observedAt.formatted(date: .abbreviated, time: .standard)
+                )
+                LabeledContent("Schema", value: evidence.schemaVersion.formatted())
             }
         }
+        .navigationTitle("Identity Evidence")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private var anchorLabel: String {
