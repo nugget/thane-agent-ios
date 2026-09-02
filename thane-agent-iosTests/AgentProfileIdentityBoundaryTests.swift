@@ -202,6 +202,41 @@ struct AgentProfileIdentityBoundaryTests {
         fixture.profile.disconnect()
     }
 
+    @Test("Forgetting a pin hides its inbox and re-pinning restores it")
+    func forgettingPinSuspendsScopedInbox() async throws {
+        let evidence = try IdentityTestFixture.freshEvidence()
+        let fixture = try AppIdentityFixture(
+            evidence: evidence,
+            pinnedEvidence: evidence
+        )
+        defer { fixture.cleanup() }
+        let record = InboxRecord(
+            id: "suggestion-1",
+            counterpartyID: evidence.instance.id,
+            kind: .suggestion,
+            title: "A useful suggestion",
+            summary: "There is a quiet opening this afternoon.",
+            createdAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        try fixture.profile.inboxStore.upsert(record)
+        fixture.profile.connectUsingCurrentValues()
+        try await fixture.waitForIdentityRefresh()
+
+        await fixture.profile.forgetThane()
+
+        #expect(fixture.profile.inboxStore.boundCounterpartyID == nil)
+        #expect(fixture.profile.inboxStore.records.isEmpty)
+
+        fixture.profile.pinPresentedIdentity()
+
+        #expect(
+            fixture.profile.inboxStore.boundCounterpartyID
+                == evidence.instance.id
+        )
+        #expect(fixture.profile.inboxStore.records == [record])
+        fixture.profile.disconnect()
+    }
+
     @Test("Re-pinning the same counterparty preserves its pairwise client identity")
     func sameCounterpartyPreservesPairwiseIdentity() async throws {
         let evidence = try IdentityTestFixture.freshEvidence()
@@ -312,6 +347,37 @@ struct AgentProfileIdentityBoundaryTests {
         #expect(fixture.profile.sharingPreferences.hasEnabledData == false)
     }
 
+    @Test("Removing after forgetting a pin deletes its preserved inbox")
+    func removingAfterForgetDeletesScopedInbox() async throws {
+        let evidence = try IdentityTestFixture.freshEvidence()
+        let fixture = try AppIdentityFixture(
+            evidence: evidence,
+            pinnedEvidence: evidence
+        )
+        defer { fixture.cleanup() }
+        let profileID = fixture.profile.id
+        try fixture.profile.inboxStore.upsert(
+            InboxRecord(
+                id: "suggestion-1",
+                counterpartyID: evidence.instance.id,
+                kind: .suggestion,
+                title: "A useful suggestion",
+                summary: "There is a quiet opening this afternoon.",
+                createdAt: Date(timeIntervalSince1970: 1_800_000_000)
+            )
+        )
+
+        await fixture.profile.forgetThane()
+        await fixture.profile.removeConnection()
+
+        let reloaded = fixture.inboxStore(
+            profileID: profileID,
+            counterpartyID: evidence.instance.id
+        )
+        #expect(reloaded.records.isEmpty)
+        #expect(reloaded.lastError == nil)
+    }
+
     @Test("A token deletion failure leaves the configured profile retryable")
     func tokenDeletionFailureLeavesConfigurationRetryable() async throws {
         let evidence = try IdentityTestFixture.freshEvidence()
@@ -384,6 +450,10 @@ private final class AppIdentityFixture {
             ),
             uploader: AppIdentityUploader()
         )
+        let inboxStore = InboxStore(
+            profileID: settings.profileID,
+            storageDirectoryURL: directoryURL
+        )
         profile = AgentProfile(
             connectionSettings: settings,
             sharingPreferences: SharingPreferences(defaults: defaults),
@@ -391,8 +461,18 @@ private final class AppIdentityFixture {
             identityService: identityService ?? IdentityService(
                 fetcher: AppIdentityFetcher(evidence: evidence)
             ),
-            identityPinning: pinning
+            identityPinning: pinning,
+            inboxStore: inboxStore
         )
+    }
+
+    func inboxStore(profileID: String, counterpartyID: String) -> InboxStore {
+        let store = InboxStore(
+            profileID: profileID,
+            storageDirectoryURL: directoryURL
+        )
+        store.scope(to: counterpartyID)
+        return store
     }
 
     func waitForIdentityRefresh() async throws {

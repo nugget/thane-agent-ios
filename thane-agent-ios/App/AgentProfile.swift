@@ -16,6 +16,7 @@ final class AgentProfile: Identifiable {
     let identityService: IdentityService
     let identityPinning: IdentityPinningService
     let conversationStore: ConversationStore
+    let inboxStore: InboxStore
 
     var tokenInput: String = ""
     private(set) var configurationError: String?
@@ -30,7 +31,8 @@ final class AgentProfile: Identifiable {
         observationPublisher: ObservationPublisher? = nil,
         identityService: IdentityService = IdentityService(),
         identityPinning: IdentityPinningService? = nil,
-        conversationStore: ConversationStore = ConversationStore()
+        conversationStore: ConversationStore = ConversationStore(),
+        inboxStore: InboxStore? = nil
     ) {
         let identityPinning = identityPinning ?? IdentityPinningService(
             connectionID: connectionSettings.connectionID
@@ -50,10 +52,12 @@ final class AgentProfile: Identifiable {
         self.identityService = identityService
         self.identityPinning = identityPinning
         self.conversationStore = conversationStore
+        self.inboxStore = inboxStore ?? InboxStore(profileID: profileID)
         if let pinnedCounterpartyID = identityPinning.pin?.identityID {
             connectionSettings.bindPairwiseClientID(to: pinnedCounterpartyID)
         }
         sharingPreferences.scope(to: identityPinning.pin?.identityID)
+        self.inboxStore.scope(to: identityPinning.pin?.identityID)
 
         let connection = ServerConnection()
         let router = PlatformServiceRouter()
@@ -311,6 +315,7 @@ final class AgentProfile: Identifiable {
             return
         }
         applySharingScope(evidence.instance.id)
+        inboxStore.scope(to: evidence.instance.id)
         reconcileIdentityBoundary()
     }
 
@@ -323,6 +328,7 @@ final class AgentProfile: Identifiable {
             try await observationPublisher.discardAllPending()
             try identityPinning.forget()
             applySharingScope(nil)
+            inboxStore.scope(to: nil)
         } catch {
             configurationError = error.localizedDescription
         }
@@ -341,6 +347,7 @@ final class AgentProfile: Identifiable {
             tokenInput = ""
             try identityPinning.forget()
             try await observationPublisher.discardAllPending()
+            try inboxStore.discardAllProfileData()
             if let counterpartyID {
                 sharingPreferences.removeScope(for: counterpartyID)
             }
