@@ -8,12 +8,16 @@ nonisolated enum AppSection: Hashable, Sendable {
 nonisolated enum AppDestination: Hashable, Sendable {
     case conversations(counterpartyID: String)
     case conversation(counterpartyID: String, conversationID: String)
+    case inbox(counterpartyID: String)
+    case inboxItem(counterpartyID: String, itemID: String)
     case counterparty(counterpartyID: String)
 
     var counterpartyID: String {
         switch self {
         case .conversations(let counterpartyID),
              .conversation(let counterpartyID, _),
+             .inbox(let counterpartyID),
+             .inboxItem(let counterpartyID, _),
              .counterparty(let counterpartyID):
             counterpartyID
         }
@@ -30,6 +34,10 @@ nonisolated enum AppDestination: Hashable, Sendable {
             "/agents/\(identity)/conversations"
         case .conversation(_, let conversationID):
             "/agents/\(identity)/conversations/\(AppDestinationValidator.percentEncodedIdentifier(conversationID))"
+        case .inbox:
+            "/agents/\(identity)/inbox"
+        case .inboxItem(_, let itemID):
+            "/agents/\(identity)/inbox/\(AppDestinationValidator.percentEncodedIdentifier(itemID))"
         case .counterparty:
             "/agents/\(identity)"
         }
@@ -50,6 +58,7 @@ nonisolated enum ThaneURLParseError: LocalizedError, Equatable, Sendable {
     case unknownDestination
     case invalidCounterpartyID
     case invalidConversationID
+    case invalidInboxItemID
 
     var errorDescription: String? {
         switch self {
@@ -67,6 +76,8 @@ nonisolated enum ThaneURLParseError: LocalizedError, Equatable, Sendable {
             "The link does not contain a valid bounded Thane identity identifier."
         case .invalidConversationID:
             "The link does not contain a valid bounded conversation identifier."
+        case .invalidInboxItemID:
+            "The link does not contain a valid bounded inbox item identifier."
         }
     }
 }
@@ -118,12 +129,22 @@ nonisolated enum ThaneURLParser {
             destination = .counterparty(counterpartyID: counterpartyID)
         case 3 where encodedSegments[2] == "conversations":
             destination = .conversations(counterpartyID: counterpartyID)
+        case 3 where encodedSegments[2] == "inbox":
+            destination = .inbox(counterpartyID: counterpartyID)
         case 4 where encodedSegments[2] == "conversations":
             destination = .conversation(
                 counterpartyID: counterpartyID,
                 conversationID: try decodedIdentifier(
                     encodedSegments[3],
                     invalidError: .invalidConversationID
+                )
+            )
+        case 4 where encodedSegments[2] == "inbox":
+            destination = .inboxItem(
+                counterpartyID: counterpartyID,
+                itemID: try decodedIdentifier(
+                    encodedSegments[3],
+                    invalidError: .invalidInboxItemID
                 )
             )
         default:
@@ -240,7 +261,7 @@ final class AppRouter {
         switch destination {
         case .conversations:
             chatPath.removeAll()
-        case .conversation, .counterparty:
+        case .conversation, .inbox, .inboxItem, .counterparty:
             chatPath = [destination]
         }
     }
@@ -260,6 +281,7 @@ final class AppRouter {
 private nonisolated enum AppDestinationValidator {
     private static let maximumCounterpartyIDLength = 512
     private static let maximumConversationIDLength = 128
+    private static let maximumInboxItemIDLength = 128
 
     static func validate(_ destination: AppDestination) throws {
         guard isValidCounterpartyID(destination.counterpartyID) else {
@@ -268,6 +290,10 @@ private nonisolated enum AppDestinationValidator {
         if case .conversation(_, let conversationID) = destination,
            !isValidConversationID(conversationID) {
             throw ThaneURLParseError.invalidConversationID
+        }
+        if case .inboxItem(_, let itemID) = destination,
+           !isValidInboxItemID(itemID) {
+            throw ThaneURLParseError.invalidInboxItemID
         }
     }
 
@@ -314,6 +340,10 @@ private nonisolated enum AppDestinationValidator {
 
     private static func isValidConversationID(_ value: String) -> Bool {
         isValidIdentifier(value, maximumLength: maximumConversationIDLength, allowed: isUnreserved)
+    }
+
+    private static func isValidInboxItemID(_ value: String) -> Bool {
+        isValidIdentifier(value, maximumLength: maximumInboxItemIDLength, allowed: isUnreserved)
     }
 
     private static func isValidIdentifier(

@@ -50,6 +50,8 @@ routing identifiers only:
 - `thane://v1/agents/<thane-identity-id>`
 - `thane://v1/agents/<thane-identity-id>/conversations`
 - `thane://v1/agents/<thane-identity-id>/conversations/<conversation-id>`
+- `thane://v1/agents/<thane-identity-id>/inbox`
+- `thane://v1/agents/<thane-identity-id>/inbox/<item-id>`
 
 Reserved characters in identifiers must be percent encoded. The app rejects
 unknown versions and destinations, credentials, ports, query strings,

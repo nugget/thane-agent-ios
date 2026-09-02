@@ -23,6 +23,17 @@ struct AppRoutingTests {
                     conversationID: "session-1"
                 )
             ),
+            (
+                "thane://v1/agents/thane%3Aed25519%3ASHA256%3Apocket/inbox",
+                .inbox(counterpartyID: "thane:ed25519:SHA256:pocket")
+            ),
+            (
+                "thane://v1/agents/thane%3Aed25519%3ASHA256%3Apocket/inbox/item-1",
+                .inboxItem(
+                    counterpartyID: "thane:ed25519:SHA256:pocket",
+                    itemID: "item-1"
+                )
+            ),
         ]
 
         for (rawURL, expected) in cases {
@@ -42,6 +53,13 @@ struct AppRoutingTests {
 
         #expect(url.absoluteString.contains("a%2Fb%2Bc%3D%3D"))
         #expect(try ThaneURLParser.parse(url) == destination)
+
+        let inboxDestination = AppDestination.inboxItem(
+            counterpartyID: "thane:ed25519:SHA256:a/b+c==",
+            itemID: "suggestion_1~draft"
+        )
+        let inboxURL = try #require(inboxDestination.externalURL)
+        #expect(try ThaneURLParser.parse(inboxURL) == inboxDestination)
     }
 
     @Test("Untrusted URLs cannot carry credentials or private payload data")
@@ -57,6 +75,7 @@ struct AppRoutingTests {
             "thane://v1/location/41.8,-87.6",
             "thane://v1/agents/thane%3Aone/messages/hello",
             "thane://v1/agents/thane%3Aone/conversations/session%2Fprivate",
+            "thane://v1/agents/thane%3Aone/inbox/item%2Fprivate",
             "thane://v1/agents/\(oversizedID)",
         ]
 
@@ -81,6 +100,7 @@ struct AppRoutingTests {
 
         let oversizedCounterpartyID = String(repeating: "a", count: 513)
         let oversizedConversationID = String(repeating: "b", count: 129)
+        let oversizedInboxItemID = String(repeating: "c", count: 129)
         let invalidCases: [(String, ThaneURLParseError)] = [
             ("thane://v1/agents/", .unknownDestination),
             ("thane://v1/agents/%2E%2E", .invalidCounterpartyID),
@@ -98,6 +118,14 @@ struct AppRoutingTests {
             (
                 "thane://v1/agents/thane%3Aone/conversations/\(oversizedConversationID)",
                 .invalidConversationID
+            ),
+            (
+                "thane://v1/agents/thane%3Aone/inbox/has%20spaces",
+                .invalidInboxItemID
+            ),
+            (
+                "thane://v1/agents/thane%3Aone/inbox/\(oversizedInboxItemID)",
+                .invalidInboxItemID
             ),
         ]
 
@@ -119,6 +147,22 @@ struct AppRouterTests {
         let destination = AppDestination.conversation(
             counterpartyID: counterparty.id,
             conversationID: "session-1"
+        )
+        let router = AppRouter(selectedSection: .settings)
+
+        router.navigate(to: destination, activeCounterparty: counterparty)
+
+        #expect(router.selectedSection == .chats)
+        #expect(router.chatPath == [destination])
+        #expect(router.issue == nil)
+    }
+
+    @Test("A matching identity opens an opaque inbox item route")
+    func matchingIdentityRoutesToInboxItem() throws {
+        let counterparty = ThaneCounterparty(evidence: try IdentityTestFixture.evidence())
+        let destination = AppDestination.inboxItem(
+            counterpartyID: counterparty.id,
+            itemID: "item-1"
         )
         let router = AppRouter(selectedSection: .settings)
 

@@ -142,6 +142,14 @@ enum PreviewFixtures {
         let identityService = IdentityService(
             fetcher: PreviewIdentityFetcher(evidence: identity)
         )
+        let inboxStore = InboxStore(
+            profileID: connectionSettings.profileID,
+            storageDirectoryURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent(
+                    "info.nugget.thane-agent-ios.preview.\(UUID().uuidString)",
+                    isDirectory: true
+                )
+        )
         let profile = AgentProfile(
             connectionSettings: connectionSettings,
             sharingPreferences: sharingPreferences,
@@ -163,8 +171,35 @@ enum PreviewFixtures {
                     latestMessagePreview: "The oil-pressure trace is ready to inspect.",
                     updatedAt: Date().addingTimeInterval(-2_700)
                 ),
-            ])
+            ]),
+            inboxStore: inboxStore
         )
+        do {
+            try inboxStore.upsert(
+                InboxRecord(
+                    id: "journal-evening",
+                    counterpartyID: identity.instance.id,
+                    kind: .suggestion,
+                    title: "A good moment to journal",
+                    summary: "Your afternoon opened up. Want to capture a few notes before dinner?",
+                    createdAt: Date().addingTimeInterval(-480)
+                )
+            )
+            try inboxStore.upsert(
+                InboxRecord(
+                    id: "elise-trace",
+                    counterpartyID: identity.instance.id,
+                    kind: .conversation,
+                    title: "Telemetry trace is ready",
+                    summary: "The oil-pressure trace from the last drive is ready to inspect.",
+                    createdAt: Date().addingTimeInterval(-2_700),
+                    isRead: true,
+                    relatedConversationID: "garage"
+                )
+            )
+        } catch {
+            preconditionFailure("Could not prepare preview inbox: \(error)")
+        }
         let appState = AppState(
             appPreferences: AppPreferences(defaults: defaults),
             profiles: [profile]

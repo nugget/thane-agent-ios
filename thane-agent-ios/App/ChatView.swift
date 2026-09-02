@@ -54,6 +54,20 @@ struct ChatView: View {
         .navigationTitle("Chats")
         .toolbar {
             if let counterparty = profile.counterparty {
+                if profile.identityPinning.pin?.identityID == counterparty.id {
+                    ToolbarItem(placement: .topBarLeading) {
+                        NavigationLink(
+                            value: AppDestination.inbox(counterpartyID: counterparty.id)
+                        ) {
+                            InboxToolbarIcon(unreadCount: profile.inboxStore.unreadCount)
+                        }
+                        .accessibilityLabel(
+                            profile.inboxStore.unreadCount == 0
+                                ? "Inbox"
+                                : "Inbox, \(profile.inboxStore.unreadCount) unread"
+                        )
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     NavigationLink(
                         value: AppDestination.counterparty(counterpartyID: counterparty.id)
@@ -64,6 +78,22 @@ struct ChatView: View {
                 }
             }
         }
+    }
+}
+
+private struct InboxToolbarIcon: View {
+    let unreadCount: Int
+
+    var body: some View {
+        Image(systemName: unreadCount == 0 ? "tray" : "tray.full.fill")
+            .overlay(alignment: .topTrailing) {
+                if unreadCount > 0 {
+                    Circle()
+                        .fill(.blue)
+                        .frame(width: 8, height: 8)
+                        .offset(x: 4, y: -3)
+                }
+            }
     }
 }
 
@@ -156,6 +186,34 @@ struct AppDestinationView: View {
         switch destination {
         case .conversations:
             ChatView(openSettings: openSettings)
+        case .inbox:
+            if profile.identityPinning.pin?.identityID == counterparty.id,
+               profile.inboxStore.boundCounterpartyID == counterparty.id {
+                InboxView(profile: profile, counterparty: counterparty)
+            } else {
+                InboxIdentityUnavailableView(counterparty: counterparty)
+            }
+        case .inboxItem(_, let itemID):
+            if profile.identityPinning.pin?.identityID == counterparty.id,
+               profile.inboxStore.boundCounterpartyID == counterparty.id {
+                if let record = profile.inboxStore.record(id: itemID) {
+                    InboxItemView(
+                        profile: profile,
+                        counterparty: counterparty,
+                        record: record
+                    )
+                } else {
+                    ContentUnavailableView {
+                        Label("Inbox Item Unavailable", systemImage: "tray")
+                    } description: {
+                        Text("This item is not available for \(counterparty.displayName) on this iPhone.")
+                    }
+                    .navigationTitle("Inbox")
+                    .navigationBarTitleDisplayMode(.inline)
+                }
+            } else {
+                InboxIdentityUnavailableView(counterparty: counterparty)
+            }
         case .counterparty:
             CounterpartyDetailView(
                 profile: profile,
