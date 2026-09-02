@@ -188,7 +188,9 @@ struct AgentProfileIdentityBoundaryTests {
         fixture.profile.connectUsingCurrentValues()
         try await fixture.waitForIdentityRefresh()
         fixture.profile.setSystemCategory(.regional, enabled: true)
+        fixture.profile.sharingPreferences.photosEnabled = true
         #expect(fixture.profile.sharingPreferences.regionalEnabled)
+        #expect(fixture.profile.sharingPreferences.photosEnabled)
 
         await fixture.profile.forgetThane()
 
@@ -199,6 +201,7 @@ struct AgentProfileIdentityBoundaryTests {
         fixture.profile.pinPresentedIdentity()
         #expect(fixture.profile.sharingPreferences.counterpartyID == evidence.instance.id)
         #expect(fixture.profile.sharingPreferences.regionalEnabled)
+        #expect(fixture.profile.sharingPreferences.photosEnabled)
         fixture.profile.disconnect()
     }
 
@@ -311,6 +314,7 @@ struct AgentProfileIdentityBoundaryTests {
         let originalClientID = fixture.profile.connectionSettings.pairwiseClientID
 
         fixture.profile.setSystemCategory(.regional, enabled: true)
+        fixture.profile.sharingPreferences.photosEnabled = true
         await fixture.profile.removeConnection()
 
         #expect(!fixture.profile.hasConnectionConfiguration)
@@ -340,6 +344,7 @@ struct AgentProfileIdentityBoundaryTests {
         defer { fixture.cleanup() }
 
         fixture.profile.setSystemCategory(.regional, enabled: true)
+        fixture.profile.sharingPreferences.photosEnabled = true
         await fixture.profile.forgetThane()
         await fixture.profile.removeConnection()
 
