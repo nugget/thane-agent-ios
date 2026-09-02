@@ -422,7 +422,7 @@ private nonisolated final class CancellablePhotoResourceStream:
     ) -> @Sendable () -> Void {
         let task = Task.detached { [weak self, chunks] in
             guard let self else { return }
-            for chunk in chunks {
+            for (index, chunk) in chunks.enumerated() {
                 let shouldDeliver = lock.withLock { () -> Bool in
                     guard !state.isCancelled else { return false }
                     state.deliveredChunkCount += 1
@@ -431,8 +431,10 @@ private nonisolated final class CancellablePhotoResourceStream:
                 }
                 guard shouldDeliver else { return }
                 dataReceived(chunk)
-                try? await Task.sleep(nanoseconds: 25_000_000)
-                guard !Task.isCancelled else { return }
+                if index < chunks.count - 1 {
+                    try? await Task.sleep(nanoseconds: 25_000_000)
+                    guard !Task.isCancelled else { return }
+                }
             }
             completion(.success)
         }
