@@ -222,7 +222,11 @@ struct PhotoServiceTests {
             trailingData,
         ])
 
-        let result = await PhotoEmbeddedMetadataResourceRequest().read(from: stream)
+        let request = PhotoEmbeddedMetadataResourceRequest(
+            timeoutNanoseconds: 10_000_000_000
+        )
+
+        let result = await request.read(from: stream)
 
         #expect(result.status == .available)
         #expect(result.metadata?.cameraMake == "Camera Maker")
@@ -259,7 +263,11 @@ struct PhotoServiceTests {
             Data(image.dropFirst(33)),
         ])
 
-        let result = await PhotoEmbeddedMetadataResourceRequest().read(from: stream)
+        let request = PhotoEmbeddedMetadataResourceRequest(
+            timeoutNanoseconds: 10_000_000_000
+        )
+
+        let result = await request.read(from: stream)
 
         #expect(result.status == .available)
         #expect(result.metadata?.cameraMake == nil)
