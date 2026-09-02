@@ -131,7 +131,7 @@ struct ServerConnectionTests {
             credentialStore: AuthenticationCredentialStore()
         )
         settings.isEnabled = true
-        let appState = AppState(
+        let profile = AgentProfile(
             connectionSettings: settings,
             sharingPreferences: SharingPreferences(defaults: defaults),
             identityPinning: IdentityPinningService(
@@ -140,11 +140,11 @@ struct ServerConnectionTests {
             )
         )
 
-        appState.connection.handleAuthenticationFailure("Expired token")
+        profile.connection.handleAuthenticationFailure("Expired token")
 
         #expect(settings.isEnabled == false)
-        #expect(appState.connection.state == .disconnected)
-        #expect(appState.displayedError == "Authentication failed: Expired token")
+        #expect(profile.connection.state == .disconnected)
+        #expect(profile.displayedError == "Authentication failed: Expired token")
     }
 
     private static func certificateChain() -> [TransportCertificate] {

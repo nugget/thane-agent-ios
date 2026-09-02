@@ -19,18 +19,18 @@ struct SettingsView: View {
             }
 
             Section {
-                if appState.configuredConnections.isEmpty {
+                if appState.configuredProfiles.isEmpty {
                     NavigationLink {
-                        AgentSettingsView()
+                        AgentSettingsView(profile: appState.activeProfile)
                     } label: {
                         Label("Add Agent", systemImage: "person.crop.circle.badge.plus")
                     }
                 } else {
-                    ForEach(appState.configuredConnections) { connection in
+                    ForEach(appState.configuredProfiles) { profile in
                         NavigationLink {
-                            AgentSettingsView()
+                            AgentSettingsView(profile: profile)
                         } label: {
-                            ConnectionRow(connection: connection)
+                            ConnectionRow(profile: profile)
                         }
                     }
                 }
@@ -96,13 +96,11 @@ private extension AppAppearance {
 }
 
 private struct ConnectionRow: View {
-    @Environment(AppState.self) private var appState
-
-    let connection: ConfiguredThaneConnection
+    let profile: AgentProfile
 
     var body: some View {
         HStack(spacing: 12) {
-            if let counterparty = connection.counterparty {
+            if let counterparty = profile.counterparty {
                 ThaneIdentityMark(identityID: counterparty.id, size: 44)
             } else {
                 Image(systemName: "person.crop.circle.badge.questionmark")
@@ -112,12 +110,12 @@ private struct ConnectionRow: View {
             }
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(connection.counterparty?.displayName ?? connectionHost)
+                Text(profile.counterparty?.displayName ?? connectionHost)
                     .font(.headline)
-                Text(connection.counterparty == nil ? "Identity not pinned" : appState.identityStatusLabel)
+                Text(profile.counterparty == nil ? "Identity not pinned" : profile.identityStatusLabel)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if connection.counterparty != nil {
+                if profile.counterparty != nil {
                     Text(connectionHost)
                         .font(.caption.monospaced())
                         .foregroundStyle(.tertiary)
@@ -127,8 +125,8 @@ private struct ConnectionRow: View {
     }
 
     private var connectionHost: String {
-        connection.endpoint?.host()
-            ?? appState.connectionSettings.urlString
+        profile.connectionSettings.serverURL?.host()
+            ?? profile.connectionSettings.urlString
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .nilIfEmpty
             ?? "Unconfigured Agent"
@@ -178,8 +176,8 @@ private struct ConnectionStatusSection: View {
 }
 
 private struct AgentSettingsView: View {
-    @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
+    let profile: AgentProfile
     @State private var urlString = ""
     @State private var token = ""
     @State private var hasLoadedValues = false
@@ -189,7 +187,7 @@ private struct AgentSettingsView: View {
 
     var body: some View {
         Form {
-            if let counterparty = appState.counterparty {
+            if let counterparty = profile.counterparty {
                 Section("Agent") {
                     HStack(spacing: 12) {
                         ThaneIdentityMark(identityID: counterparty.id, size: 44)
@@ -199,7 +197,7 @@ private struct AgentSettingsView: View {
                             Text(counterparty.shortFingerprint)
                                 .font(.caption.monospaced())
                                 .foregroundStyle(.secondary)
-                            Text(appState.identityStatusLabel)
+                            Text(profile.identityStatusLabel)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -211,7 +209,7 @@ private struct AgentSettingsView: View {
                         identityDetail(for: counterparty)
                     } label: {
                         LabeledContent {
-                            Text(appState.identityStatusLabel)
+                            Text(profile.identityStatusLabel)
                                 .foregroundStyle(.secondary)
                         } label: {
                             Label("Identity & Trust", systemImage: "person.badge.shield.checkmark")
@@ -219,7 +217,7 @@ private struct AgentSettingsView: View {
                     }
 
                     NavigationLink {
-                        SharingView(counterparty: counterparty)
+                        SharingView(profile: profile, counterparty: counterparty)
                     } label: {
                         LabeledContent {
                             Text(sharingSummary(for: counterparty))
@@ -232,13 +230,13 @@ private struct AgentSettingsView: View {
             }
 
             ConnectionStatusSection(
-                statusTitle: appState.statusTitle,
-                statusSymbol: appState.statusSymbol,
+                statusTitle: profile.statusTitle,
+                statusSymbol: profile.statusSymbol,
                 statusColor: statusColor,
-                account: appState.connection.account,
-                serverVersion: appState.connection.serverVersion,
-                serverStartedAt: appState.connection.serverStartedAt,
-                protocolVersion: appState.connection.protocolVersion
+                account: profile.connection.account,
+                serverVersion: profile.connection.serverVersion,
+                serverStartedAt: profile.connection.serverStartedAt,
+                protocolVersion: profile.connection.protocolVersion
             )
 
             Section("Configuration") {
@@ -247,13 +245,13 @@ private struct AgentSettingsView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .textContentType(.URL)
-                    .disabled(appState.hasActiveConnection)
+                    .disabled(profile.hasActiveConnection)
 
                 SecureField("API token", text: $token)
                     .textContentType(.password)
-                    .disabled(appState.hasActiveConnection)
+                    .disabled(profile.hasActiveConnection)
 
-                if appState.hasActiveConnection {
+                if profile.hasActiveConnection {
                     Text("Disconnect before editing connection credentials.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -262,7 +260,7 @@ private struct AgentSettingsView: View {
 
             Section {
                 LabeledContent("Pairwise Client ID") {
-                    Text(appState.connectionSettings.pairwiseClientID)
+                    Text(profile.connectionSettings.pairwiseClientID)
                         .font(.caption.monospaced())
                         .textSelection(.enabled)
                 }
@@ -272,7 +270,7 @@ private struct AgentSettingsView: View {
                 Text("This random identifier is stable for reconnecting to this counterparty and is never reused for another agent connection.")
             }
 
-            if let error = appState.displayedError {
+            if let error = profile.displayedError {
                 Section {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
                         .font(.footnote)
@@ -281,12 +279,12 @@ private struct AgentSettingsView: View {
             }
 
             Section {
-                if appState.hasActiveConnection {
+                if profile.hasActiveConnection {
                     Button("Disconnect", role: .destructive) {
-                        appState.disconnect()
+                        profile.disconnect()
                     }
                 } else {
-                    Button(appState.identityPinning.pin == nil ? "Check Identity" : "Connect") {
+                    Button(profile.identityPinning.pin == nil ? "Check Identity" : "Connect") {
                         applyDraftAndConnect()
                     }
                     .disabled(!draftHasCredentials)
@@ -295,9 +293,9 @@ private struct AgentSettingsView: View {
                 Button("Forget API Token", role: .destructive) {
                     showingForgetTokenConfirmation = true
                 }
-                .disabled(appState.tokenInput.isEmpty)
+                .disabled(profile.tokenInput.isEmpty)
 
-                if appState.identityPinning.pin != nil || appState.identityPinning.lastError != nil {
+                if profile.identityPinning.pin != nil || profile.identityPinning.lastError != nil {
                     Button("Forget Identity Pin", role: .destructive) {
                         showingForgetThaneConfirmation = true
                     }
@@ -306,7 +304,7 @@ private struct AgentSettingsView: View {
                 Text("The API token and identity pin are stored in this iPhone's protected Keychain. Private delivery starts only after current evidence matches the pin.")
             }
 
-            if appState.hasConnectionConfiguration {
+            if profile.hasConnectionConfiguration {
                 Section {
                     Button("Remove Connection", role: .destructive) {
                         showingRemovalConfirmation = true
@@ -316,13 +314,13 @@ private struct AgentSettingsView: View {
                 }
             }
         }
-        .navigationTitle(appState.counterparty == nil ? "Add Agent" : "Agent Settings")
+        .navigationTitle(profile.counterparty == nil ? "Add Agent" : "Agent Settings")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: loadValuesIfNeeded)
-        .onChange(of: appState.connectionSettings.urlString) { _, newValue in
+        .onChange(of: profile.connectionSettings.urlString) { _, newValue in
             urlString = newValue
         }
-        .onChange(of: appState.tokenInput) { _, newValue in
+        .onChange(of: profile.tokenInput) { _, newValue in
             token = newValue
         }
         .confirmationDialog(
@@ -331,7 +329,7 @@ private struct AgentSettingsView: View {
             titleVisibility: .visible
         ) {
             Button("Forget API Token", role: .destructive) {
-                appState.forgetToken()
+                profile.forgetToken()
                 token = ""
             }
         } message: {
@@ -343,7 +341,7 @@ private struct AgentSettingsView: View {
             titleVisibility: .visible
         ) {
             Button("Forget Identity Pin", role: .destructive) {
-                Task { await appState.forgetThane() }
+                Task { await profile.forgetThane() }
             }
         } message: {
             Text("The app will disconnect, remove the identity pin, and discard queued observations. Connection credentials and this counterparty's saved sharing choices are unchanged.")
@@ -355,8 +353,8 @@ private struct AgentSettingsView: View {
         ) {
             Button("Remove Connection", role: .destructive) {
                 Task {
-                    await appState.removeConnection()
-                    if !appState.hasConnectionConfiguration {
+                    await profile.removeConnection()
+                    if !profile.hasConnectionConfiguration {
                         dismiss()
                     }
                 }
@@ -367,7 +365,7 @@ private struct AgentSettingsView: View {
     }
 
     private var statusColor: Color {
-        switch appState.connection.state {
+        switch profile.connection.state {
         case .connected: .green
         case .connecting, .authenticating, .reconnecting: .orange
         case .disconnected: .secondary
@@ -381,22 +379,22 @@ private struct AgentSettingsView: View {
 
     private func loadValuesIfNeeded() {
         guard !hasLoadedValues else { return }
-        urlString = appState.connectionSettings.urlString
-        token = appState.tokenInput
+        urlString = profile.connectionSettings.urlString
+        token = profile.tokenInput
         hasLoadedValues = true
     }
 
     private func applyDraftAndConnect() {
-        appState.connectionSettings.urlString = urlString
-        appState.tokenInput = token
-        appState.connectUsingCurrentValues()
+        profile.connectionSettings.urlString = urlString
+        profile.tokenInput = token
+        profile.connectUsingCurrentValues()
     }
 
     @ViewBuilder
     private func identityDetail(for counterparty: ThaneCounterparty) -> some View {
-        if let evidence = appState.presentedIdentity {
-            IdentityEvidenceView(evidence: evidence)
-        } else if let pin = appState.identityPinning.pin,
+        if let evidence = profile.presentedIdentity {
+            IdentityEvidenceView(profile: profile, evidence: evidence)
+        } else if let pin = profile.identityPinning.pin,
                   pin.identityID == counterparty.id {
             IdentityPinView(pin: pin)
         } else {
@@ -410,11 +408,11 @@ private struct AgentSettingsView: View {
     }
 
     private func sharingSummary(for counterparty: ThaneCounterparty) -> String {
-        guard appState.sharingPreferences.counterpartyID == counterparty.id else {
+        guard profile.sharingPreferences.counterpartyID == counterparty.id else {
             return "Unavailable"
         }
-        let systemCount = appState.sharingPreferences.enabledSystemCategories.count
-        let count = systemCount + (appState.sharingPreferences.locationEnabled ? 1 : 0)
+        let systemCount = profile.sharingPreferences.enabledSystemCategories.count
+        let count = systemCount + (profile.sharingPreferences.locationEnabled ? 1 : 0)
         return count == 0 ? "Nothing enabled" : "\(count) source\(count == 1 ? "" : "s") enabled"
     }
 }
@@ -441,10 +439,10 @@ private extension String {
 }
 
 #Preview("Agent Settings") {
+    let profile = PreviewFixtures.appState().activeProfile
     NavigationStack {
-        AgentSettingsView()
+        AgentSettingsView(profile: profile)
     }
-    .environment(PreviewFixtures.appState())
 }
 
 #Preview("Connected Status") {

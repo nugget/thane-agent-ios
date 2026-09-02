@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 nonisolated enum ObservationOutboxError: LocalizedError, Sendable {
@@ -65,8 +66,12 @@ actor ObservationOutbox {
     private var legacyIdentityID: String?
     private var legacyEventCount = 0
 
-    init(fileURL: URL? = nil) {
-        var resolvedURL = fileURL ?? URL(fileURLWithPath: NSTemporaryDirectory())
+    init(
+        fileURL: URL? = nil,
+        profileID: String? = nil,
+        storageDirectoryURL: URL? = nil
+    ) {
+        var resolvedURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("thane-observations-unavailable.json")
         var loadedScope: ObservationDeliveryScope?
         var loadedEvents: [ObservationKind: ObservationEvent] = [:]
@@ -75,7 +80,24 @@ actor ObservationOutbox {
         var loadedLegacyEventCount = 0
         var didResolveStorageURL = false
         do {
-            resolvedURL = try fileURL ?? Self.defaultFileURL()
+            if let fileURL {
+                resolvedURL = fileURL
+            } else if let profileID, !profileID.isEmpty {
+                let storageDirectoryURL = try storageDirectoryURL
+                    ?? Self.defaultStorageDirectoryURL()
+                resolvedURL = Self.profileFileURL(
+                    profileID: profileID,
+                    storageDirectoryURL: storageDirectoryURL
+                )
+                try Self.migrateLegacyOutboxIfNeeded(
+                    storageDirectoryURL: storageDirectoryURL,
+                    destinationURL: resolvedURL
+                )
+            } else {
+                throw ObservationOutboxError.unavailable(
+                    "A stable profile ID is required for persisted queue storage."
+                )
+            }
             didResolveStorageURL = true
             if FileManager.default.fileExists(atPath: resolvedURL.path) {
                 let data = try Data(contentsOf: resolvedURL)
@@ -291,7 +313,19 @@ actor ObservationOutbox {
         return candidate.eventID.uuidString > existing.eventID.uuidString
     }
 
-    private nonisolated static func defaultFileURL() throws -> URL {
+    nonisolated static func profileFileURL(
+        profileID: String,
+        storageDirectoryURL: URL
+    ) -> URL {
+        let digest = SHA256.hash(data: Data(profileID.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return storageDirectoryURL
+            .appendingPathComponent("observation-outboxes", isDirectory: true)
+            .appendingPathComponent("\(digest).json", isDirectory: false)
+    }
+
+    private nonisolated static func defaultStorageDirectoryURL() throws -> URL {
         try FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
@@ -299,6 +333,22 @@ actor ObservationOutbox {
             create: true
         )
         .appendingPathComponent("info.nugget.thane-agent-ios", isDirectory: true)
-        .appendingPathComponent("observation-outbox.json", isDirectory: false)
+    }
+
+    private nonisolated static func migrateLegacyOutboxIfNeeded(
+        storageDirectoryURL: URL,
+        destinationURL: URL
+    ) throws {
+        let legacyURL = storageDirectoryURL
+            .appendingPathComponent("observation-outbox.json", isDirectory: false)
+        guard FileManager.default.fileExists(atPath: legacyURL.path),
+              !FileManager.default.fileExists(atPath: destinationURL.path) else {
+            return
+        }
+        try FileManager.default.createDirectory(
+            at: destinationURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.moveItem(at: legacyURL, to: destinationURL)
     }
 }

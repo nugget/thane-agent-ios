@@ -6,9 +6,10 @@ struct ChatView: View {
     let openSettings: () -> Void
 
     var body: some View {
+        let profile = appState.activeProfile
         Group {
-            if let counterparty = appState.counterparty {
-                let conversations = appState.conversationStore.summaries(
+            if let counterparty = profile.counterparty {
+                let conversations = profile.conversationStore.summaries(
                     forCounterpartyID: counterparty.id
                 )
                 if conversations.isEmpty {
@@ -18,7 +19,10 @@ struct ChatView: View {
                         Text("Chat sessions with \(counterparty.displayName) will appear here.")
                     } actions: {
                         NavigationLink("View \(counterparty.displayName)") {
-                            CounterpartyDetailView(counterparty: counterparty)
+                            CounterpartyDetailView(
+                                profile: profile,
+                                counterparty: counterparty
+                            )
                         }
                         .buttonStyle(.bordered)
                     }
@@ -26,6 +30,7 @@ struct ChatView: View {
                     List(conversations) { conversation in
                         NavigationLink {
                             ConversationView(
+                                profile: profile,
                                 conversation: conversation,
                                 counterparty: counterparty
                             )
@@ -51,10 +56,13 @@ struct ChatView: View {
         }
         .navigationTitle("Chats")
         .toolbar {
-            if let counterparty = appState.counterparty {
+            if let counterparty = profile.counterparty {
                 ToolbarItem(placement: .topBarTrailing) {
                     NavigationLink {
-                        CounterpartyDetailView(counterparty: counterparty)
+                        CounterpartyDetailView(
+                            profile: profile,
+                            counterparty: counterparty
+                        )
                     } label: {
                         ThaneIdentityMark(identityID: counterparty.id, size: 30)
                     }
@@ -106,6 +114,7 @@ private struct ConversationRow: View {
 }
 
 private struct ConversationView: View {
+    let profile: AgentProfile
     let conversation: ConversationSummary
     let counterparty: ThaneCounterparty
 
@@ -120,7 +129,10 @@ private struct ConversationView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 NavigationLink {
-                    CounterpartyDetailView(counterparty: counterparty)
+                    CounterpartyDetailView(
+                        profile: profile,
+                        counterparty: counterparty
+                    )
                 } label: {
                     ThaneIdentityMark(identityID: counterparty.id, size: 30)
                 }

@@ -14,6 +14,7 @@ struct ConnectionSettingsTests {
             defaults: fixture.defaults,
             credentialStore: fixture.credentials
         )
+        let profileID = settings.profileID
         let connectionID = settings.connectionID
         let clientID = settings.pairwiseClientID
 
@@ -24,6 +25,7 @@ struct ConnectionSettingsTests {
             defaults: fixture.defaults,
             credentialStore: fixture.credentials
         )
+        #expect(restored.profileID == profileID)
         #expect(restored.connectionID == connectionID)
         #expect(restored.pairwiseClientID == clientID)
         #expect(restored.pairwiseCounterpartyID == "thane:identity:first")
@@ -58,6 +60,7 @@ struct ConnectionSettingsTests {
         try secondSettings.saveToken("second-token")
 
         #expect(firstSettings.connectionID != secondSettings.connectionID)
+        #expect(firstSettings.profileID != secondSettings.profileID)
         #expect(firstSettings.pairwiseClientID != secondSettings.pairwiseClientID)
         #expect(
             first.credentials.value(account: firstSettings.securityScope.tokenAccount)
@@ -69,7 +72,7 @@ struct ConnectionSettingsTests {
         )
     }
 
-    @Test("Removing a profile rotates both local and pairwise identities")
+    @Test("Removing configuration preserves the profile and rotates connection identities")
     func removalRotatesIdentities() throws {
         let fixture = try SettingsFixture()
         defer { fixture.cleanup() }
@@ -78,11 +81,13 @@ struct ConnectionSettingsTests {
             credentialStore: fixture.credentials
         )
         settings.bindPairwiseClientID(to: "thane:identity:first")
+        let profileID = settings.profileID
         let connectionID = settings.connectionID
         let clientID = settings.pairwiseClientID
 
         settings.removeConfiguration()
 
+        #expect(settings.profileID == profileID)
         #expect(settings.connectionID != connectionID)
         #expect(settings.pairwiseClientID != clientID)
         #expect(settings.pairwiseCounterpartyID == nil)
@@ -103,6 +108,7 @@ struct ConnectionSettingsTests {
             credentialStore: credentials
         )
 
+        #expect(settings.profileID == "connection-one")
         #expect(settings.pairwiseClientID == "legacy-client")
         #expect(try settings.storedToken() == "secret")
         #expect(credentials.value(account: settings.securityScope.tokenAccount) == "secret")
@@ -113,6 +119,7 @@ struct ConnectionSettingsTests {
             defaults: fixture.defaults,
             credentialStore: credentials
         )
+        #expect(restored.profileID == "connection-one")
         #expect(restored.pairwiseClientID == "legacy-client")
     }
 
@@ -129,7 +136,7 @@ struct ConnectionSettingsTests {
         )
         settings.isEnabled = true
         let preferences = SharingPreferences(defaults: fixture.defaults)
-        let appState = AppState(
+        let profile = AgentProfile(
             connectionSettings: settings,
             sharingPreferences: preferences,
             identityPinning: IdentityPinningService(
@@ -138,16 +145,16 @@ struct ConnectionSettingsTests {
             )
         )
 
-        #expect(appState.tokenInput == "secret")
+        #expect(profile.tokenInput == "secret")
         #expect(credentials.value(account: settings.securityScope.tokenAccount) == "secret")
 
-        appState.forgetToken()
+        profile.forgetToken()
 
         #expect(credentials.value(account: settings.securityScope.tokenAccount) == nil)
         #expect(credentials.value(account: ConnectionSecurityScope.legacyTokenAccount) == nil)
-        #expect(appState.tokenInput.isEmpty)
+        #expect(profile.tokenInput.isEmpty)
         #expect(settings.isEnabled == false)
-        #expect(appState.connection.state == .disconnected)
+        #expect(profile.connection.state == .disconnected)
     }
 }
 
