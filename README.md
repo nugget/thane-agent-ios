@@ -42,6 +42,21 @@ API tokens are stored in Keychain. Remote servers must use HTTPS; plaintext is
 accepted only for simulator-friendly loopback development. TLS verification is
 never disabled.
 
+## App links
+
+The initial `thane://` routes are read-only and versioned. They carry bounded
+routing identifiers only:
+
+- `thane://v1/agents/<thane-identity-id>`
+- `thane://v1/agents/<thane-identity-id>/conversations`
+- `thane://v1/agents/<thane-identity-id>/conversations/<conversation-id>`
+
+Reserved characters in identifiers must be percent encoded. The app rejects
+unknown versions and destinations, credentials, ports, query strings,
+fragments, oversized values, and non-identifier payloads. A route opens only
+when its exact Thane identity is active; mismatches show both identities for
+operator inspection without switching agents or disclosing destination data.
+
 ## Platform target
 
 The deployment target is iOS 26.0. The initial providers need no iOS 27-only

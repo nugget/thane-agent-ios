@@ -1,23 +1,26 @@
 import SwiftUI
 
-private enum AppSection: Hashable {
-    case chats
-    case settings
-}
-
 struct RootView: View {
     @Environment(AppState.self) private var appState
-    @State private var selection: AppSection = .chats
+    @State private var router = AppRouter()
 
     var body: some View {
-        TabView(selection: $selection) {
+        @Bindable var router = router
+
+        TabView(selection: $router.selectedSection) {
             Tab("Chats", systemImage: "bubble.left.and.bubble.right", value: .chats) {
-                NavigationStack {
+                NavigationStack(path: $router.chatPath) {
                     ChatView {
-                        selection = .settings
+                        router.showSettings()
+                    }
+                    .navigationDestination(for: AppDestination.self) { destination in
+                        AppDestinationView(
+                            profile: appState.activeProfile,
+                            destination: destination,
+                            openSettings: router.showSettings
+                        )
                     }
                 }
-                .id(appState.activeProfile.counterparty?.id)
             }
 
             Tab("Settings", systemImage: "gearshape", value: .settings) {
@@ -28,6 +31,18 @@ struct RootView: View {
         }
         .tabViewStyle(.sidebarAdaptable)
         .preferredColorScheme(preferredColorScheme)
+        .onOpenURL { url in
+            router.open(
+                url,
+                activeCounterparty: appState.activeProfile.counterparty
+            )
+        }
+        .onChange(of: appState.activeProfile.counterparty?.id) { _, counterpartyID in
+            router.reconcile(activeCounterpartyID: counterpartyID)
+        }
+        .sheet(item: $router.issue) { issue in
+            RouteIssueView(issue: issue)
+        }
     }
 
     private var preferredColorScheme: ColorScheme? {
