@@ -139,7 +139,6 @@ final class InboxStore {
         try Self.validate(record, counterpartyID: counterpartyID)
 
         let previous = records
-        records.removeAll { $0.id == record.id }
         records.append(record)
         records = Self.normalized(records)
         do {
@@ -299,10 +298,9 @@ final class InboxStore {
                 recordsByID[record.id] = record
                 continue
             }
-            if record.createdAt > existing.createdAt
-                || (record.createdAt == existing.createdAt && record.isRead && !existing.isRead) {
-                recordsByID[record.id] = record
-            }
+            var merged = record.createdAt > existing.createdAt ? record : existing
+            merged.isRead = existing.isRead || record.isRead
+            recordsByID[record.id] = merged
         }
         return recordsByID.values
             .sorted {

@@ -97,6 +97,47 @@ struct InboxStoreTests {
         #expect(reloaded.unreadCount == 0)
     }
 
+    @Test("Re-delivery preserves read state and rejects stale content")
+    func redeliveryMergesMonotonicState() throws {
+        let fixture = try InboxStoreFixture()
+        defer { fixture.cleanup() }
+        let store = fixture.store(profileID: "profile-one", counterpartyID: "thane:one")
+        try store.upsert(
+            fixture.record(
+                id: "item-1",
+                title: "Current content",
+                createdAt: Date(timeIntervalSince1970: 200)
+            )
+        )
+        try store.markRead(id: "item-1")
+
+        try store.upsert(
+            fixture.record(
+                id: "item-1",
+                title: "Stale content",
+                createdAt: Date(timeIntervalSince1970: 100)
+            )
+        )
+
+        #expect(store.record(id: "item-1")?.title == "Current content")
+        #expect(store.record(id: "item-1")?.isRead == true)
+
+        try store.upsert(
+            fixture.record(
+                id: "item-1",
+                title: "Fresh content",
+                createdAt: Date(timeIntervalSince1970: 300)
+            )
+        )
+
+        #expect(store.record(id: "item-1")?.title == "Fresh content")
+        #expect(store.record(id: "item-1")?.isRead == true)
+
+        let reloaded = fixture.store(profileID: "profile-one", counterpartyID: "thane:one")
+        #expect(reloaded.record(id: "item-1")?.title == "Fresh content")
+        #expect(reloaded.record(id: "item-1")?.isRead == true)
+    }
+
     @Test("Writes reject records belonging to another identity")
     func mismatchedRecordFailsClosed() throws {
         let fixture = try InboxStoreFixture()
@@ -251,15 +292,17 @@ private final class InboxStoreFixture {
 
     func record(
         id: String,
-        counterpartyID: String = "thane:one"
+        counterpartyID: String = "thane:one",
+        title: String = "A useful suggestion",
+        createdAt: Date = Date(timeIntervalSince1970: 1_800_000_000)
     ) -> InboxRecord {
         InboxRecord(
             id: id,
             counterpartyID: counterpartyID,
             kind: .suggestion,
-            title: "A useful suggestion",
+            title: title,
             summary: "There is a quiet opening in the afternoon.",
-            createdAt: Date(timeIntervalSince1970: 1_800_000_000),
+            createdAt: createdAt,
             relatedConversationID: "planning"
         )
     }
