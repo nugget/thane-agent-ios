@@ -46,6 +46,16 @@ final class ConversationStore {
             .sorted { $0.updatedAt > $1.updatedAt }
     }
 
+    func summary(
+        counterpartyID: String,
+        conversationID: String
+    ) -> ConversationSummary? {
+        summaries.first {
+            $0.id.counterpartyID == counterpartyID
+                && $0.id.conversationID == conversationID
+        }
+    }
+
     func replace(with summaries: [ConversationSummary]) {
         self.summaries = summaries
     }

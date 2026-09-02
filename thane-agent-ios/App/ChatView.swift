@@ -18,23 +18,20 @@ struct ChatView: View {
                     } description: {
                         Text("Chat sessions with \(counterparty.displayName) will appear here.")
                     } actions: {
-                        NavigationLink("View \(counterparty.displayName)") {
-                            CounterpartyDetailView(
-                                profile: profile,
-                                counterparty: counterparty
-                            )
-                        }
+                        NavigationLink(
+                            "View \(counterparty.displayName)",
+                            value: AppDestination.counterparty(counterpartyID: counterparty.id)
+                        )
                         .buttonStyle(.bordered)
                     }
                 } else {
                     List(conversations) { conversation in
-                        NavigationLink {
-                            ConversationView(
-                                profile: profile,
-                                conversation: conversation,
-                                counterparty: counterparty
+                        NavigationLink(
+                            value: AppDestination.conversation(
+                                counterpartyID: counterparty.id,
+                                conversationID: conversation.id.conversationID
                             )
-                        } label: {
+                        ) {
                             ConversationRow(
                                 conversation: conversation,
                                 counterparty: counterparty
@@ -58,12 +55,9 @@ struct ChatView: View {
         .toolbar {
             if let counterparty = profile.counterparty {
                 ToolbarItem(placement: .topBarTrailing) {
-                    NavigationLink {
-                        CounterpartyDetailView(
-                            profile: profile,
-                            counterparty: counterparty
-                        )
-                    } label: {
+                    NavigationLink(
+                        value: AppDestination.counterparty(counterpartyID: counterparty.id)
+                    ) {
                         ThaneIdentityMark(identityID: counterparty.id, size: 30)
                     }
                     .accessibilityLabel("View \(counterparty.displayName)")
@@ -113,7 +107,7 @@ private struct ConversationRow: View {
     }
 }
 
-private struct ConversationView: View {
+struct ConversationView: View {
     let profile: AgentProfile
     let conversation: ConversationSummary
     let counterparty: ThaneCounterparty
@@ -128,15 +122,63 @@ private struct ConversationView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                NavigationLink {
-                    CounterpartyDetailView(
-                        profile: profile,
-                        counterparty: counterparty
-                    )
-                } label: {
+                NavigationLink(
+                    value: AppDestination.counterparty(counterpartyID: counterparty.id)
+                ) {
                     ThaneIdentityMark(identityID: counterparty.id, size: 30)
                 }
                 .accessibilityLabel("View \(counterparty.displayName)")
+            }
+        }
+    }
+}
+
+struct AppDestinationView: View {
+    let profile: AgentProfile
+    let destination: AppDestination
+    let openSettings: () -> Void
+
+    var body: some View {
+        if let counterparty = profile.counterparty,
+           counterparty.id == destination.counterpartyID {
+            destinationView(counterparty: counterparty)
+        } else {
+            ContentUnavailableView {
+                Label("Destination Unavailable", systemImage: "exclamationmark.shield")
+            } description: {
+                Text("This destination does not belong to the active Thane identity.")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func destinationView(counterparty: ThaneCounterparty) -> some View {
+        switch destination {
+        case .conversations:
+            ChatView(openSettings: openSettings)
+        case .counterparty:
+            CounterpartyDetailView(
+                profile: profile,
+                counterparty: counterparty
+            )
+        case .conversation(_, let conversationID):
+            if let conversation = profile.conversationStore.summary(
+                counterpartyID: counterparty.id,
+                conversationID: conversationID
+            ) {
+                ConversationView(
+                    profile: profile,
+                    conversation: conversation,
+                    counterparty: counterparty
+                )
+            } else {
+                ContentUnavailableView {
+                    Label("Conversation Unavailable", systemImage: "exclamationmark.bubble")
+                } description: {
+                    Text("This conversation is not available for \(counterparty.displayName) on this iPhone.")
+                }
+                .navigationTitle(counterparty.displayName)
+                .navigationBarTitleDisplayMode(.inline)
             }
         }
     }

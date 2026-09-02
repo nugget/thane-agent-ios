@@ -48,6 +48,36 @@ struct ConversationModelsTests {
         #expect(summaries.allSatisfy { $0.id.counterpartyID == "thane:one" })
     }
 
+    @Test("Conversation lookup requires both the counterparty and conversation identifier")
+    func lookupCannotCrossCounterparties() throws {
+        let expected = ConversationSummary(
+            counterpartyID: "thane:one",
+            conversationID: "shared-session",
+            updatedAt: Date()
+        )
+        let store = ConversationStore(summaries: [
+            expected,
+            ConversationSummary(
+                counterpartyID: "thane:two",
+                conversationID: "shared-session",
+                updatedAt: Date()
+            ),
+        ])
+
+        #expect(
+            store.summary(
+                counterpartyID: "thane:one",
+                conversationID: "shared-session"
+            ) == expected
+        )
+        #expect(
+            store.summary(
+                counterpartyID: "thane:three",
+                conversationID: "shared-session"
+            ) == nil
+        )
+    }
+
     @Test("Unread counts are normalized at the domain boundary")
     func unreadCountCannotBeNegative() {
         let summary = ConversationSummary(
