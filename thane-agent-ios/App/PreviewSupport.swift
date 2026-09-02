@@ -1,5 +1,6 @@
 import Foundation
 
+#if DEBUG
 @MainActor
 enum PreviewFixtures {
     static let endpoint = URL(string: "https://aimee.example.com")!
@@ -208,3 +209,4 @@ private final class PreviewCredentialStore: CredentialStoring {
         values[account] = nil
     }
 }
+#endif

@@ -130,9 +130,11 @@ private struct ConversationView: View {
     }
 }
 
+#if DEBUG
 #Preview("Conversations") {
     NavigationStack {
         ChatView {}
     }
     .environment(PreviewFixtures.appState())
 }
+#endif

@@ -3,6 +3,7 @@ import SwiftUI
 struct TransportCertificateChainView: View {
     let endpoint: URL?
     let certificates: [TransportCertificate]
+    let capturedAt: Date?
 
     var body: some View {
         List {
@@ -11,6 +12,12 @@ struct TransportCertificateChainView: View {
                     .foregroundStyle(.green)
                 if let endpoint {
                     CertificateValueRow(label: "Endpoint", value: endpoint.absoluteString)
+                }
+                if let capturedAt {
+                    LabeledContent(
+                        "Captured",
+                        value: capturedAt.formatted(date: .abbreviated, time: .standard)
+                    )
                 }
                 LabeledContent("Certificates", value: certificates.count.formatted())
             } footer: {
@@ -127,11 +134,13 @@ private struct CertificateValueRow: View {
     }
 }
 
+#if DEBUG
 #Preview("Transport Certificate Chain") {
     NavigationStack {
         TransportCertificateChainView(
             endpoint: PreviewFixtures.endpoint,
-            certificates: PreviewFixtures.transportCertificates
+            certificates: PreviewFixtures.transportCertificates,
+            capturedAt: Date().addingTimeInterval(-180)
         )
     }
 }
@@ -145,3 +154,4 @@ private struct CertificateValueRow: View {
         )
     }
 }
+#endif

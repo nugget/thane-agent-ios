@@ -66,6 +66,7 @@ struct OperationalRow: View {
     }
 }
 
+#if DEBUG
 #Preview("Card Components") {
     ScrollView {
         VStack(spacing: 22) {
@@ -98,3 +99,4 @@ struct OperationalRow: View {
     }
     .background(Color(uiColor: .systemGroupedBackground))
 }
+#endif

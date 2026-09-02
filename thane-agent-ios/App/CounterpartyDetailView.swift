@@ -299,9 +299,11 @@ struct CounterpartyDetailView: View {
     }
 }
 
+#if DEBUG
 #Preview("Agent Detail") {
     NavigationStack {
         CounterpartyDetailView(counterparty: PreviewFixtures.counterparty)
     }
     .environment(PreviewFixtures.appState())
 }
+#endif

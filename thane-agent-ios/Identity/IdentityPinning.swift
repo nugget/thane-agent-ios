@@ -71,7 +71,7 @@ nonisolated enum IdentityContinuityState: Equatable, Sendable {
     }
 
     var permitsPrivateDelivery: Bool {
-        self == .matching || self == .stale
+        self == .matching
     }
 }
 

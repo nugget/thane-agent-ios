@@ -64,7 +64,20 @@ nonisolated enum IdentityTestFixture {
         """#.utf8
     )
 
-    static func evidence() throws -> ThaneIdentityEvidence {
-        try ThaneIdentityCoding.decoder().decode(ThaneIdentityEvidence.self, from: json)
+    static func evidence(observedAt: Date? = nil) throws -> ThaneIdentityEvidence {
+        let decoded = try ThaneIdentityCoding.decoder().decode(
+            ThaneIdentityEvidence.self,
+            from: json
+        )
+        return ThaneIdentityEvidence(
+            schemaVersion: decoded.schemaVersion,
+            observedAt: observedAt ?? decoded.observedAt,
+            instance: decoded.instance,
+            core: decoded.core
+        )
+    }
+
+    static func freshEvidence() throws -> ThaneIdentityEvidence {
+        try evidence(observedAt: Date())
     }
 }

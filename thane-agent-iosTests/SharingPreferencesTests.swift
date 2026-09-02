@@ -55,6 +55,12 @@ struct SharingPreferencesTests {
         restored.scope(to: "thane:one")
         #expect(restored.backgroundLocationEnabled == false)
         #expect(restored.hasEnabledData == false)
+
+        restored.locationEnabled = true
+        restored.scope(to: nil)
+        restored.scope(to: "thane:one")
+        #expect(restored.locationEnabled)
+        #expect(restored.backgroundLocationEnabled == false)
     }
 
     @Test("Choices are isolated by stable counterparty identity")
@@ -97,6 +103,23 @@ struct SharingPreferencesTests {
         #expect(preferences.locationEnabled)
 
         preferences.scope(to: "thane:two")
+        #expect(preferences.hasEnabledData == false)
+        #expect(defaults.object(forKey: "sharing.regional") == nil)
+        #expect(defaults.object(forKey: "sharing.location") == nil)
+    }
+
+    @Test("Unattributed legacy choices are discarded before a new identity is pinned")
+    func unattributedLegacyChoicesAreDiscarded() throws {
+        let suite = "SharingPreferencesTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "sharing.regional")
+        defaults.set(true, forKey: "sharing.location")
+
+        let preferences = SharingPreferences(defaults: defaults)
+        preferences.scope(to: nil)
+        preferences.scope(to: "thane:new")
+
         #expect(preferences.hasEnabledData == false)
         #expect(defaults.object(forKey: "sharing.regional") == nil)
         #expect(defaults.object(forKey: "sharing.location") == nil)

@@ -39,7 +39,9 @@ struct RootView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     RootView()
         .environment(PreviewFixtures.appState())
 }
+#endif

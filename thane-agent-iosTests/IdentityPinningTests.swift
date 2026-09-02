@@ -184,7 +184,7 @@ struct IdentityPinningTests {
         #expect(IdentityContinuityState.evaluate(pin: pin, evidence: nil) == .unavailable)
         #expect(IdentityContinuityState.evaluate(pin: pin, evidence: mismatch) == .mismatch)
         #expect(IdentityContinuityState.matching.permitsPrivateDelivery)
-        #expect(IdentityContinuityState.stale.permitsPrivateDelivery)
+        #expect(!IdentityContinuityState.stale.permitsPrivateDelivery)
         #expect(!IdentityContinuityState.mismatch.permitsPrivateDelivery)
         #expect(!IdentityContinuityState.unavailable.permitsPrivateDelivery)
     }

@@ -235,9 +235,11 @@ struct SharingView: View {
     }
 }
 
+#if DEBUG
 #Preview("Sharing") {
     NavigationStack {
         SharingView(counterparty: PreviewFixtures.counterparty)
     }
     .environment(PreviewFixtures.appState())
 }
+#endif

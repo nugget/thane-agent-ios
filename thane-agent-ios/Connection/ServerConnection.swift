@@ -48,12 +48,15 @@ final class ServerConnection {
     private(set) var serverVersion: String?
     private(set) var serverStartedAt: Date?
     private(set) var transportCertificateChain: [TransportCertificate] = []
+    private(set) var transportCertificateCapturedAt: Date?
+    private(set) var transportCertificateEndpoint: URL?
     private(set) var lastError: String?
 
     var registeredCapabilities: [Capability] = []
     var onPlatformRequest: ((PlatformRequest) async -> PlatformResponse)?
     var onConnected: (() -> Void)?
     var onAuthenticationFailure: (() -> Void)?
+    var onReconnectValidationRequested: (() -> Void)?
 
     private let logger = Logger(
         subsystem: "info.nugget.thane-agent-ios",
@@ -63,6 +66,7 @@ final class ServerConnection {
     private var session: URLSession?
     private var trustObserver: ServerTrustObserver?
     private var pendingTransportCertificateChain: [TransportCertificate] = []
+    private var hasPendingTransportCertificateObservation = false
     private var readLoopTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
     private var responseTasks: [UUID: Task<Void, Never>] = [:]
@@ -73,6 +77,10 @@ final class ServerConnection {
     private var nextID: Int64 = 1
 
     func connect(url: URL, token: String, clientID: String, clientName: String) {
+        if let transportCertificateEndpoint,
+           transportCertificateEndpoint != url {
+            clearRetainedTransportEvidence()
+        }
         let details = ConnectionDetails(
             url: url,
             token: token,
@@ -100,9 +108,8 @@ final class ServerConnection {
         protocolVersion = nil
         serverVersion = nil
         serverStartedAt = nil
-        transportCertificateChain = []
         pendingTransportCertificateChain = []
-        lastError = nil
+        hasPendingTransportCertificateObservation = false
     }
 
     private func beginConnection(_ details: ConnectionDetails) {
@@ -115,14 +122,13 @@ final class ServerConnection {
         currentAttemptID = attemptID
 
         state = .connecting
-        lastError = nil
         providerID = nil
         account = nil
         protocolVersion = nil
         serverVersion = nil
         serverStartedAt = nil
-        transportCertificateChain = []
         pendingTransportCertificateChain = []
+        hasPendingTransportCertificateObservation = false
 
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 30
@@ -377,7 +383,13 @@ final class ServerConnection {
                   self.activeDetails == details else {
                 return
             }
-            self.beginConnection(details)
+            guard let onReconnectValidationRequested = self.onReconnectValidationRequested else {
+                self.state = .disconnected
+                self.activeDetails = nil
+                self.currentAttemptID = nil
+                return
+            }
+            onReconnectValidationRequested()
         }
     }
 
@@ -400,19 +412,49 @@ final class ServerConnection {
     func handleConnectionEstablished() {
         reconnectAttempt = 0
         state = .connected
-        transportCertificateChain = pendingTransportCertificateChain
+        if hasPendingTransportCertificateObservation {
+            publishTransportCertificateChain(pendingTransportCertificateChain)
+        }
         pendingTransportCertificateChain = []
+        hasPendingTransportCertificateObservation = false
         lastError = nil
         logger.info("Connected to Thane")
         onConnected?()
     }
 
+    func resumeConnectionAfterIdentityValidation() {
+        guard case .reconnecting = state,
+              !intentionalDisconnect,
+              let activeDetails else {
+            return
+        }
+        beginConnection(activeDetails)
+    }
+
     func recordTransportCertificateChain(_ certificateChain: [TransportCertificate]) {
         if state == .connected {
-            transportCertificateChain = certificateChain
+            publishTransportCertificateChain(certificateChain)
         } else {
             pendingTransportCertificateChain = certificateChain
+            hasPendingTransportCertificateObservation = true
         }
+    }
+
+    func clearRetainedDiagnostics() {
+        clearRetainedTransportEvidence()
+        lastError = nil
+    }
+
+    private func publishTransportCertificateChain(_ certificateChain: [TransportCertificate]) {
+        transportCertificateChain = certificateChain
+        transportCertificateCapturedAt = Date()
+        transportCertificateEndpoint = activeDetails?.url
+    }
+
+    private func clearRetainedTransportEvidence() {
+        transportCertificateChain = []
+        transportCertificateCapturedAt = nil
+        transportCertificateEndpoint = nil
     }
 
     private func cleanupTransport(closeCode: URLSessionWebSocketTask.CloseCode) {
@@ -426,6 +468,7 @@ final class ServerConnection {
         session = nil
         trustObserver = nil
         pendingTransportCertificateChain = []
+        hasPendingTransportCertificateObservation = false
     }
 }
 

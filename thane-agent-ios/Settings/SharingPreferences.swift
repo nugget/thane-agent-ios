@@ -89,6 +89,7 @@ final class SharingPreferences {
     }
 
     func scope(to counterpartyID: String?) {
+        migrateLegacyValuesIfNeeded(to: counterpartyID)
         guard self.counterpartyID != counterpartyID else { return }
 
         self.counterpartyID = counterpartyID
@@ -104,7 +105,6 @@ final class SharingPreferences {
             return
         }
 
-        migrateLegacyValuesIfNeeded(to: counterpartyID)
         regionalEnabled = storedValue(
             for: SystemContextCategory.regional.rawValue,
             counterpartyID: counterpartyID
@@ -121,9 +121,19 @@ final class SharingPreferences {
             for: "location",
             counterpartyID: counterpartyID
         )
+        let storedBackgroundLocationEnabled = storedValue(
+            for: "background-location",
+            counterpartyID: counterpartyID
+        )
         locationEnabled = storedLocationEnabled
         backgroundLocationEnabled = storedLocationEnabled
-            && storedValue(for: "background-location", counterpartyID: counterpartyID)
+            && storedBackgroundLocationEnabled
+        if !storedLocationEnabled, storedBackgroundLocationEnabled {
+            defaults.set(
+                false,
+                forKey: Self.scopedKey(counterpartyID, "background-location")
+            )
+        }
     }
 
     func removeScope(for counterpartyID: String) {
@@ -144,16 +154,18 @@ final class SharingPreferences {
         defaults.bool(forKey: Self.scopedKey(counterpartyID, suffix))
     }
 
-    private func migrateLegacyValuesIfNeeded(to counterpartyID: String) {
+    private func migrateLegacyValuesIfNeeded(to counterpartyID: String?) {
         guard !defaults.bool(forKey: Self.migrationKey) else { return }
 
         for suffix in Self.preferenceSuffixes {
             let legacyKey = Self.legacyKey(suffix)
             guard defaults.object(forKey: legacyKey) != nil else { continue }
-            defaults.set(
-                defaults.bool(forKey: legacyKey),
-                forKey: Self.scopedKey(counterpartyID, suffix)
-            )
+            if let counterpartyID {
+                defaults.set(
+                    defaults.bool(forKey: legacyKey),
+                    forKey: Self.scopedKey(counterpartyID, suffix)
+                )
+            }
             defaults.removeObject(forKey: legacyKey)
         }
         defaults.set(true, forKey: Self.migrationKey)

@@ -21,6 +21,7 @@ final class AppState {
     private(set) var configurationError: String?
 
     private let systemContextService: SystemContextService
+    private var identityRefreshDeadlineTask: Task<Void, Never>?
 
     init(
         appPreferences: AppPreferences = AppPreferences(),
@@ -101,10 +102,15 @@ final class AppState {
             self?.connectionSettings.isEnabled = false
             self?.suspendObservationDelivery()
         }
-        identityService.onEvidenceUpdated = { [weak self] _ in
+        connection.onReconnectValidationRequested = { [weak self] in
+            self?.refreshIdentityBeforeReconnect()
+        }
+        identityService.onEvidenceUpdated = { [weak self] evidence in
+            self?.scheduleIdentityRefreshDeadline(for: evidence)
             self?.reconcileIdentityBoundary()
         }
         identityService.onRefreshFailed = { [weak self] in
+            self?.cancelIdentityRefreshDeadline()
             self?.reconcileIdentityBoundary()
         }
 
@@ -127,6 +133,7 @@ final class AppState {
             switch identityContinuity {
             case .presented: return "Awaiting Pin"
             case .mismatch: return "Identity Mismatch"
+            case .stale: return "Identity Evidence Stale"
             case .unavailable where connectionSettings.isEnabled: return "Identity Unavailable"
             default: break
             }
@@ -146,6 +153,7 @@ final class AppState {
             switch identityContinuity {
             case .presented: return "pin.circle"
             case .mismatch: return "exclamationmark.shield.fill"
+            case .stale: return "clock.badge.exclamationmark"
             case .unavailable where connectionSettings.isEnabled: return "questionmark.diamond"
             default: break
             }
@@ -239,11 +247,13 @@ final class AppState {
     }
 
     func enterBackground() {
+        cancelIdentityRefreshDeadline()
         connection.disconnect()
     }
 
     func connectUsingCurrentValues() {
         configurationError = nil
+        cancelIdentityRefreshDeadline()
         guard let url = connectionSettings.serverURL else {
             configurationError = "Enter an HTTPS agent server URL. HTTP is accepted only for loopback development."
             return
@@ -268,12 +278,14 @@ final class AppState {
     }
 
     func disconnect() {
+        cancelIdentityRefreshDeadline()
         connectionSettings.isEnabled = false
         suspendPrivateDelivery()
     }
 
     func refreshIdentity() {
         configurationError = nil
+        cancelIdentityRefreshDeadline()
         guard let url = connectionSettings.serverURL else {
             configurationError = "Enter a valid agent server URL before refreshing identity evidence."
             return
@@ -293,6 +305,11 @@ final class AppState {
             configurationError = "Refresh identity evidence before pinning this agent."
             return
         }
+        pin(evidence)
+    }
+
+    func pin(_ evidence: ThaneIdentityEvidence) {
+        configurationError = nil
         do {
             try identityPinning.pin(evidence)
             connectionSettings.bindPairwiseClientID(to: evidence.instance.id)
@@ -306,6 +323,7 @@ final class AppState {
 
     func forgetThane() async {
         configurationError = nil
+        cancelIdentityRefreshDeadline()
         connectionSettings.isEnabled = false
         connection.disconnect()
         do {
@@ -319,22 +337,24 @@ final class AppState {
 
     func removeConnection() async {
         configurationError = nil
+        cancelIdentityRefreshDeadline()
         connectionSettings.isEnabled = false
         connection.disconnect()
         let counterpartyID = identityPinning.pin?.identityID
             ?? connectionSettings.pairwiseCounterpartyID
 
         do {
-            try await observationPublisher.discardAllPending()
             try connectionSettings.deleteToken()
+            tokenInput = ""
             try identityPinning.forget()
+            try await observationPublisher.discardAllPending()
             if let counterpartyID {
                 sharingPreferences.removeScope(for: counterpartyID)
             }
             applySharingScope(nil)
-            tokenInput = ""
             connectionSettings.removeConfiguration()
             suspendObservationDelivery()
+            connection.clearRetainedDiagnostics()
             try identityPinning.changeScope(to: connectionSettings.connectionID)
         } catch {
             configurationError = error.localizedDescription
@@ -460,6 +480,8 @@ final class AppState {
             if identityContinuity == .mismatch {
                 let name = identityPinning.pin?.nameAtPinning ?? "the pinned agent"
                 configurationError = "The presented identity does not match \(name)'s pin on this iPhone. Private delivery is blocked."
+            } else if identityContinuity == .stale {
+                configurationError = "Identity evidence is more than 15 minutes old. Refresh it before private delivery resumes."
             }
             return
         }
@@ -473,13 +495,19 @@ final class AppState {
         configureObservationPublisher()
         publishSystemContextIfEnabled()
         observationPublisher.flush()
-        guard connection.state == .disconnected else { return }
-        connection.connect(
-            url: url,
-            token: token,
-            clientID: connectionSettings.pairwiseClientID,
-            clientName: "Thane for iOS"
-        )
+        switch connection.state {
+        case .reconnecting:
+            connection.resumeConnectionAfterIdentityValidation()
+        case .disconnected:
+            connection.connect(
+                url: url,
+                token: token,
+                clientID: connectionSettings.pairwiseClientID,
+                clientName: "Thane for iOS"
+            )
+        case .connecting, .authenticating, .connected:
+            break
+        }
     }
 
     private func suspendPrivateDelivery() {
@@ -494,6 +522,51 @@ final class AppState {
             clientID: "",
             deliveryScope: observationDeliveryScope
         )
+    }
+
+    private func refreshIdentityBeforeReconnect() {
+        guard connectionSettings.isEnabled,
+              let url = connectionSettings.serverURL else {
+            suspendPrivateDelivery()
+            return
+        }
+        let token = tokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else {
+            suspendPrivateDelivery()
+            return
+        }
+
+        cancelIdentityRefreshDeadline()
+        suspendObservationDelivery()
+        identityService.refresh(from: url, token: token)
+    }
+
+    private func scheduleIdentityRefreshDeadline(for evidence: ThaneIdentityEvidence) {
+        cancelIdentityRefreshDeadline()
+        guard connectionSettings.isEnabled else { return }
+        let delay = evidence.observedAt
+            .addingTimeInterval(IdentityContinuityState.maximumEvidenceAge)
+            .timeIntervalSinceNow
+        guard delay > 0 else { return }
+
+        identityRefreshDeadlineTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(delay))
+            } catch {
+                return
+            }
+            guard let self,
+                  self.connectionSettings.isEnabled,
+                  self.presentedIdentity == evidence else {
+                return
+            }
+            self.refreshIdentityForConfiguredConnection()
+        }
+    }
+
+    private func cancelIdentityRefreshDeadline() {
+        identityRefreshDeadlineTask?.cancel()
+        identityRefreshDeadlineTask = nil
     }
 
     private var observationDeliveryScope: ObservationDeliveryScope? {

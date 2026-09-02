@@ -295,7 +295,7 @@ private struct AgentSettingsView: View {
                 Button("Forget API Token", role: .destructive) {
                     showingForgetTokenConfirmation = true
                 }
-                .disabled(token.isEmpty)
+                .disabled(appState.tokenInput.isEmpty)
 
                 if appState.identityPinning.pin != nil || appState.identityPinning.lastError != nil {
                     Button("Forget Identity Pin", role: .destructive) {
@@ -319,6 +319,12 @@ private struct AgentSettingsView: View {
         .navigationTitle(appState.counterparty == nil ? "Add Agent" : "Agent Settings")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: loadValuesIfNeeded)
+        .onChange(of: appState.connectionSettings.urlString) { _, newValue in
+            urlString = newValue
+        }
+        .onChange(of: appState.tokenInput) { _, newValue in
+            token = newValue
+        }
         .confirmationDialog(
             "Forget this API token?",
             isPresented: $showingForgetTokenConfirmation,
@@ -420,6 +426,7 @@ private extension String {
     }
 }
 
+#if DEBUG
 #Preview("Settings") {
     NavigationStack {
         SettingsView()
@@ -454,3 +461,4 @@ private extension String {
         )
     }
 }
+#endif

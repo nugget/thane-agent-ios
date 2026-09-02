@@ -167,9 +167,9 @@ struct IdentityEvidenceView: View {
                 Label(continuityTitle, systemImage: continuitySymbol)
                     .foregroundStyle(continuityColor)
 
-                if appState.identityContinuity == .presented {
+                if continuity == .presented {
                     Button("Pin \(evidence.instance.name) & Connect") {
-                        appState.pinPresentedIdentity()
+                        appState.pin(evidence)
                         if appState.identityContinuity.permitsPrivateDelivery {
                             dismiss()
                         }
@@ -179,7 +179,7 @@ struct IdentityEvidenceView: View {
                         "Pinned on this iPhone",
                         value: pin.pinnedAt.formatted(date: .abbreviated, time: .shortened)
                     )
-                    if appState.identityContinuity == .mismatch {
+                    if continuity == .mismatch {
                         EvidenceValueRow(label: "Pinned instance ID", value: pin.identityID)
                         EvidenceValueRow(
                             label: "Pinned signing key · \(pin.identityKey.algorithm)",
@@ -242,8 +242,9 @@ struct IdentityEvidenceView: View {
                 } else {
                     NavigationLink {
                         TransportCertificateChainView(
-                            endpoint: appState.connectionSettings.serverURL,
-                            certificates: appState.connection.transportCertificateChain
+                            endpoint: appState.connection.transportCertificateEndpoint,
+                            certificates: appState.connection.transportCertificateChain,
+                            capturedAt: appState.connection.transportCertificateCapturedAt
                         )
                     } label: {
                         LabeledContent("HTTPS/WSS transport") {
@@ -320,8 +321,15 @@ struct IdentityEvidenceView: View {
         }
     }
 
+    private var continuity: IdentityContinuityState {
+        IdentityContinuityState.evaluate(
+            pin: appState.identityPinning.pin,
+            evidence: evidence
+        )
+    }
+
     private var continuityTitle: String {
-        switch appState.identityContinuity {
+        switch continuity {
         case .notPinned, .presented: "Presented, not pinned"
         case .matching: "Pinned identity matches"
         case .stale: "Pinned identity matches; evidence is stale"
@@ -331,7 +339,7 @@ struct IdentityEvidenceView: View {
     }
 
     private var continuityExplanation: String {
-        switch appState.identityContinuity {
+        switch continuity {
         case .notPinned, .presented:
             "This identity was presented by the configured endpoint. Review the exact evidence before choosing to pin it on this iPhone."
         case .matching:
@@ -346,7 +354,7 @@ struct IdentityEvidenceView: View {
     }
 
     private var continuitySymbol: String {
-        switch appState.identityContinuity {
+        switch continuity {
         case .matching: "checkmark.shield.fill"
         case .stale: "clock.badge.exclamationmark"
         case .mismatch: "exclamationmark.shield.fill"
@@ -356,7 +364,7 @@ struct IdentityEvidenceView: View {
     }
 
     private var continuityColor: Color {
-        switch appState.identityContinuity {
+        switch continuity {
         case .matching: .green
         case .stale, .notPinned, .presented, .unavailable: .orange
         case .mismatch: .red
@@ -399,6 +407,7 @@ private struct VerificationRow: View {
     }
 }
 
+#if DEBUG
 #Preview("Identity Components") {
     List {
         Section("Presented") {
@@ -428,3 +437,4 @@ private struct VerificationRow: View {
     }
     .environment(PreviewFixtures.appState())
 }
+#endif

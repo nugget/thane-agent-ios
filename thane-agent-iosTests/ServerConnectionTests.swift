@@ -31,6 +31,7 @@ struct ServerConnectionTests {
         connection.handleConnectionEstablished()
 
         #expect(connection.transportCertificateChain == chain)
+        #expect(connection.transportCertificateCapturedAt != nil)
     }
 
     @Test("Certificate chain observed after establishment is published immediately")
@@ -42,6 +43,49 @@ struct ServerConnectionTests {
         connection.recordTransportCertificateChain(chain)
 
         #expect(connection.transportCertificateChain == chain)
+        #expect(connection.transportCertificateCapturedAt != nil)
+    }
+
+    @Test("Disconnect retains the last authenticated certificate evidence")
+    func disconnectRetainsCertificateEvidence() {
+        let connection = ServerConnection()
+        let chain = Self.certificateChain()
+        connection.recordTransportCertificateChain(chain)
+        connection.handleConnectionEstablished()
+        let capturedAt = connection.transportCertificateCapturedAt
+
+        connection.disconnect()
+
+        #expect(connection.transportCertificateChain == chain)
+        #expect(connection.transportCertificateCapturedAt == capturedAt)
+    }
+
+    @Test("Disconnect retains the last connection error until success")
+    func disconnectRetainsConnectionError() {
+        let connection = ServerConnection()
+        connection.handleAuthenticationFailure("Invalid token")
+
+        connection.disconnect()
+
+        #expect(connection.lastError == "Authentication failed: Invalid token")
+
+        connection.handleConnectionEstablished()
+        #expect(connection.lastError == nil)
+    }
+
+    @Test("Explicit diagnostic reset clears retained evidence and errors")
+    func explicitDiagnosticReset() {
+        let connection = ServerConnection()
+        connection.recordTransportCertificateChain(Self.certificateChain())
+        connection.handleConnectionEstablished()
+        connection.handleAuthenticationFailure("Invalid token")
+
+        connection.clearRetainedDiagnostics()
+
+        #expect(connection.transportCertificateChain.isEmpty)
+        #expect(connection.transportCertificateCapturedAt == nil)
+        #expect(connection.transportCertificateEndpoint == nil)
+        #expect(connection.lastError == nil)
     }
 
     @Test("Authentication failure stops reconnecting and reports the error")
