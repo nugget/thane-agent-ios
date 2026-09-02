@@ -1,5 +1,8 @@
+import CoreGraphics
 import Foundation
+import ImageIO
 import Testing
+import UniformTypeIdentifiers
 @testable import thane_agent_ios
 
 @Suite("Photo service")
@@ -210,6 +213,65 @@ struct PhotoServiceTests {
         _ = try JSONEncoder().encode(metadata)
     }
 
+    @Test("Embedded metadata streaming cancels as soon as ImageIO can read the header")
+    func embeddedMetadataCancelsEarly() async throws {
+        let stream = FakePhotoResourceStream(actions: [
+            .data(try makeMetadataJPEG()),
+        ])
+
+        let result = await PhotoEmbeddedMetadataResourceRequest().read(from: stream)
+
+        #expect(result.status == .available)
+        #expect(result.metadata?.cameraMake == "Camera Maker")
+        #expect(result.metadata?.cameraModel == "Camera Model")
+        #expect(result.metadata?.isoSpeedRatings == [125])
+        #expect(stream.cancellationCount == 1)
+    }
+
+    @Test("Embedded metadata streaming cancels at its byte boundary")
+    func embeddedMetadataByteLimit() async {
+        let stream = FakePhotoResourceStream(actions: [
+            .data(Data(repeating: 0, count: 33)),
+        ])
+        let request = PhotoEmbeddedMetadataResourceRequest(
+            maximumByteCount: 32,
+            timeoutNanoseconds: 1_000_000_000
+        )
+
+        let result = await request.read(from: stream)
+
+        #expect(result.status == .unavailable)
+        #expect(result.metadata == nil)
+        #expect(stream.cancellationCount == 1)
+    }
+
+    @Test("Embedded metadata streaming cancels stalled local reads")
+    func embeddedMetadataTimeout() async {
+        let stream = FakePhotoResourceStream()
+        let request = PhotoEmbeddedMetadataResourceRequest(
+            maximumByteCount: 32,
+            timeoutNanoseconds: 5_000_000
+        )
+
+        let result = await request.read(from: stream)
+
+        #expect(result.status == .unavailable)
+        #expect(stream.cancellationCount == 1)
+    }
+
+    @Test("Embedded metadata distinguishes iCloud-only resources without downloading")
+    func embeddedMetadataNotLocal() async {
+        let stream = FakePhotoResourceStream(actions: [
+            .completion(.networkAccessRequired),
+        ])
+
+        let result = await PhotoEmbeddedMetadataResourceRequest().read(from: stream)
+
+        #expect(result.status == .notLocal)
+        #expect(result.metadata == nil)
+        #expect(stream.cancellationCount == 0)
+    }
+
     @Test("The companion-authored tool schema and parameters stay aligned")
     func toolContract() async throws {
         let fixture = try PhotoPreferencesFixture(photosEnabled: true)
@@ -255,6 +317,47 @@ struct PhotoServiceTests {
             Issue.record("Expected unsupported Photos parameters to fail")
         } catch let error as PhotoServiceError {
             #expect(error.code == "invalid_request")
+        }
+    }
+}
+
+private nonisolated final class FakePhotoResourceStream:
+    PhotoResourceStreaming,
+    @unchecked Sendable
+{
+    enum Action: Sendable {
+        case data(Data)
+        case completion(PhotoResourceCompletion)
+    }
+
+    private let actions: [Action]
+    private let lock = NSLock()
+    private var storedCancellationCount = 0
+
+    var cancellationCount: Int {
+        lock.withLock { storedCancellationCount }
+    }
+
+    init(actions: [Action] = []) {
+        self.actions = actions
+    }
+
+    func start(
+        dataReceived: @escaping @Sendable (Data) -> Void,
+        completion: @escaping @Sendable (PhotoResourceCompletion) -> Void
+    ) -> @Sendable () -> Void {
+        for action in actions {
+            switch action {
+            case .data(let data):
+                dataReceived(data)
+            case .completion(let result):
+                completion(result)
+            }
+        }
+        return { [weak self] in
+            self?.lock.withLock {
+                self?.storedCancellationCount += 1
+            }
         }
     }
 }
@@ -365,6 +468,53 @@ private func makePhotoAsset(id: String, timestamp: TimeInterval) -> PhotoLibrary
             exposureBiasEV: 0
         )
     )
+}
+
+private func makeMetadataJPEG() throws -> Data {
+    let pixelData = Data([255, 0, 0, 255])
+    let provider = try #require(CGDataProvider(data: pixelData as CFData))
+    let bitmapInfo = CGBitmapInfo.byteOrder32Big.union(
+        CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+    )
+    let image = try #require(CGImage(
+        width: 1,
+        height: 1,
+        bitsPerComponent: 8,
+        bitsPerPixel: 32,
+        bytesPerRow: 4,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: bitmapInfo,
+        provider: provider,
+        decode: nil,
+        shouldInterpolate: false,
+        intent: .defaultIntent
+    ))
+    let output = NSMutableData()
+    let destination = try #require(CGImageDestinationCreateWithData(
+        output,
+        UTType.jpeg.identifier as CFString,
+        1,
+        nil
+    ))
+    let properties: NSDictionary = [
+        kCGImagePropertyOrientation: 1,
+        kCGImagePropertyTIFFDictionary: [
+            kCGImagePropertyTIFFMake: "Camera Maker",
+            kCGImagePropertyTIFFModel: "Camera Model",
+        ],
+        kCGImagePropertyExifDictionary: [
+            kCGImagePropertyExifLensMake: "Lens Maker",
+            kCGImagePropertyExifLensModel: "Lens Model",
+            kCGImagePropertyExifExposureTime: 0.01,
+            kCGImagePropertyExifFNumber: 1.8,
+            kCGImagePropertyExifISOSpeedRatings: [125],
+            kCGImagePropertyExifFocalLength: 6.8,
+            kCGImagePropertyExifExposureBiasValue: 0,
+        ],
+    ]
+    CGImageDestinationAddImage(destination, image, properties)
+    try #require(CGImageDestinationFinalize(destination))
+    return output as Data
 }
 
 @MainActor
