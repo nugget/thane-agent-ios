@@ -215,8 +215,11 @@ struct PhotoServiceTests {
 
     @Test("Embedded metadata streaming cancels as soon as ImageIO can read the header")
     func embeddedMetadataCancelsEarly() async throws {
-        let stream = FakePhotoResourceStream(actions: [
-            .data(try makeMetadataJPEG()),
+        let image = try makeMetadataJPEG()
+        let (metadataPrefix, trailingData) = try metadataPrefixAndTrailing(from: image)
+        let stream = CancellablePhotoResourceStream(chunks: [
+            metadataPrefix,
+            trailingData,
         ])
 
         let result = await PhotoEmbeddedMetadataResourceRequest().read(from: stream)
@@ -226,12 +229,15 @@ struct PhotoServiceTests {
         #expect(result.metadata?.cameraModel == "Camera Model")
         #expect(result.metadata?.isoSpeedRatings == [125])
         #expect(stream.cancellationCount == 1)
+        #expect(stream.deliveredChunkCount == 1)
+        #expect(stream.deliveredByteCount == metadataPrefix.count)
+        #expect(stream.deliveredByteCount < image.count)
     }
 
-    @Test("Embedded metadata streaming cancels at its byte boundary")
+    @Test("Embedded metadata streaming cancels exactly at its byte boundary")
     func embeddedMetadataByteLimit() async {
         let stream = FakePhotoResourceStream(actions: [
-            .data(Data(repeating: 0, count: 33)),
+            .data(Data(repeating: 0, count: 32)),
         ])
         let request = PhotoEmbeddedMetadataResourceRequest(
             maximumByteCount: 32,
@@ -243,6 +249,23 @@ struct PhotoServiceTests {
         #expect(result.status == .unavailable)
         #expect(result.metadata == nil)
         #expect(stream.cancellationCount == 1)
+    }
+
+    @Test("Basic partial properties do not masquerade as complete embedded metadata")
+    func partialBasicPropertiesDoNotCompleteEarly() async throws {
+        let image = try makePlainPNG()
+        let stream = CancellablePhotoResourceStream(chunks: [
+            Data(image.prefix(33)),
+            Data(image.dropFirst(33)),
+        ])
+
+        let result = await PhotoEmbeddedMetadataResourceRequest().read(from: stream)
+
+        #expect(result.status == .available)
+        #expect(result.metadata?.cameraMake == nil)
+        #expect(stream.cancellationCount == 0)
+        #expect(stream.deliveredChunkCount == 2)
+        #expect(stream.deliveredByteCount == image.count)
     }
 
     @Test("Embedded metadata streaming cancels stalled local reads")
@@ -362,6 +385,69 @@ private nonisolated final class FakePhotoResourceStream:
     }
 }
 
+private nonisolated final class CancellablePhotoResourceStream:
+    PhotoResourceStreaming,
+    @unchecked Sendable
+{
+    private struct State {
+        var isCancelled = false
+        var cancellationCount = 0
+        var deliveredChunkCount = 0
+        var deliveredByteCount = 0
+    }
+
+    private let chunks: [Data]
+    private let lock = NSLock()
+    private var state = State()
+
+    var cancellationCount: Int {
+        lock.withLock { state.cancellationCount }
+    }
+
+    var deliveredChunkCount: Int {
+        lock.withLock { state.deliveredChunkCount }
+    }
+
+    var deliveredByteCount: Int {
+        lock.withLock { state.deliveredByteCount }
+    }
+
+    init(chunks: [Data]) {
+        self.chunks = chunks
+    }
+
+    func start(
+        dataReceived: @escaping @Sendable (Data) -> Void,
+        completion: @escaping @Sendable (PhotoResourceCompletion) -> Void
+    ) -> @Sendable () -> Void {
+        let task = Task.detached { [weak self, chunks] in
+            guard let self else { return }
+            for chunk in chunks {
+                let shouldDeliver = lock.withLock { () -> Bool in
+                    guard !state.isCancelled else { return false }
+                    state.deliveredChunkCount += 1
+                    state.deliveredByteCount += chunk.count
+                    return true
+                }
+                guard shouldDeliver else { return }
+                dataReceived(chunk)
+                try? await Task.sleep(nanoseconds: 25_000_000)
+                guard !Task.isCancelled else { return }
+            }
+            completion(.success)
+        }
+        return { [weak self] in
+            guard let self else { return }
+            lock.withLock {
+                guard !state.isCancelled else { return }
+                state.isCancelled = true
+                state.cancellationCount += 1
+            }
+            task.cancel()
+        }
+    }
+}
+
 @MainActor
 private final class FakePhotoLibrary: PhotoLibraryReading {
     var authorizationStatus: PhotoAuthorizationState
@@ -471,6 +557,32 @@ private func makePhotoAsset(id: String, timestamp: TimeInterval) -> PhotoLibrary
 }
 
 private func makeMetadataJPEG() throws -> Data {
+    try makeTestImage(
+        type: .jpeg,
+        properties: [
+            kCGImagePropertyOrientation: 1,
+            kCGImagePropertyTIFFDictionary: [
+                kCGImagePropertyTIFFMake: "Camera Maker",
+                kCGImagePropertyTIFFModel: "Camera Model",
+            ],
+            kCGImagePropertyExifDictionary: [
+                kCGImagePropertyExifLensMake: "Lens Maker",
+                kCGImagePropertyExifLensModel: "Lens Model",
+                kCGImagePropertyExifExposureTime: 0.01,
+                kCGImagePropertyExifFNumber: 1.8,
+                kCGImagePropertyExifISOSpeedRatings: [125],
+                kCGImagePropertyExifFocalLength: 6.8,
+                kCGImagePropertyExifExposureBiasValue: 0,
+            ],
+        ]
+    )
+}
+
+private func makePlainPNG() throws -> Data {
+    try makeTestImage(type: .png, properties: [:])
+}
+
+private func makeTestImage(type: UTType, properties: NSDictionary) throws -> Data {
     let pixelData = Data([255, 0, 0, 255])
     let provider = try #require(CGDataProvider(data: pixelData as CFData))
     let bitmapInfo = CGBitmapInfo.byteOrder32Big.union(
@@ -492,29 +604,35 @@ private func makeMetadataJPEG() throws -> Data {
     let output = NSMutableData()
     let destination = try #require(CGImageDestinationCreateWithData(
         output,
-        UTType.jpeg.identifier as CFString,
+        type.identifier as CFString,
         1,
         nil
     ))
-    let properties: NSDictionary = [
-        kCGImagePropertyOrientation: 1,
-        kCGImagePropertyTIFFDictionary: [
-            kCGImagePropertyTIFFMake: "Camera Maker",
-            kCGImagePropertyTIFFModel: "Camera Model",
-        ],
-        kCGImagePropertyExifDictionary: [
-            kCGImagePropertyExifLensMake: "Lens Maker",
-            kCGImagePropertyExifLensModel: "Lens Model",
-            kCGImagePropertyExifExposureTime: 0.01,
-            kCGImagePropertyExifFNumber: 1.8,
-            kCGImagePropertyExifISOSpeedRatings: [125],
-            kCGImagePropertyExifFocalLength: 6.8,
-            kCGImagePropertyExifExposureBiasValue: 0,
-        ],
-    ]
     CGImageDestinationAddImage(destination, image, properties)
     try #require(CGImageDestinationFinalize(destination))
     return output as Data
+}
+
+private func metadataPrefixAndTrailing(from image: Data) throws -> (Data, Data) {
+    let step = 32
+    for end in stride(from: step, to: image.count, by: step) {
+        let prefix = Data(image.prefix(end))
+        guard let source = CGImageSourceCreateWithData(prefix as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+                as NSDictionary?,
+              let tiff = properties[kCGImagePropertyTIFFDictionary as String]
+                as? NSDictionary,
+              tiff[kCGImagePropertyTIFFMake as String] as? String == "Camera Maker" else {
+            continue
+        }
+        return (prefix, Data(image.dropFirst(end)))
+    }
+    Issue.record("The JPEG fixture did not expose metadata before its trailing image data")
+    throw MetadataFixtureError.noParseablePrefix
+}
+
+private enum MetadataFixtureError: Error {
+    case noParseablePrefix
 }
 
 @MainActor

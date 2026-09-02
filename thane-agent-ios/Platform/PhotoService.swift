@@ -504,11 +504,14 @@ nonisolated final class PhotoEmbeddedMetadataResourceRequest: @unchecked Sendabl
             return
         }
         receivedByteCount += data.count
-        guard let metadata = parser.consume(data, isFinal: false) else { return }
-        finish(
-            PhotoEmbeddedMetadataResult(status: .available, metadata: metadata),
-            cancellingRequest: true
-        )
+        if let metadata = parser.consume(data, isFinal: false) {
+            finish(
+                PhotoEmbeddedMetadataResult(status: .available, metadata: metadata),
+                cancellingRequest: true
+            )
+        } else if receivedByteCount == maximumByteCount {
+            finish(unavailableResult, cancellingRequest: true)
+        }
     }
 
     private func complete(_ completion: PhotoResourceCompletion) {
@@ -626,7 +629,7 @@ private nonisolated final class IncrementalPhotoMetadataParser: @unchecked Senda
         }
         let exif = properties[kCGImagePropertyExifDictionary as String] as? NSDictionary
         let tiff = properties[kCGImagePropertyTIFFDictionary as String] as? NSDictionary
-        return PhotoEmbeddedMetadata(
+        let metadata = PhotoEmbeddedMetadata(
             orientation: Self.integer(properties[kCGImagePropertyOrientation as String]),
             cameraMake: Self.bounded(Self.string(tiff?[kCGImagePropertyTIFFMake as String])),
             cameraModel: Self.bounded(Self.string(tiff?[kCGImagePropertyTIFFModel as String])),
@@ -646,6 +649,14 @@ private nonisolated final class IncrementalPhotoMetadataParser: @unchecked Senda
                 exif?[kCGImagePropertyExifExposureBiasValue as String]
             )
         )
+        // Basic properties can appear before the embedded metadata payload.
+        // Finish early only after both dictionaries we inspect are available.
+        let embeddedDictionariesAvailable = (exif?.count ?? 0) > 0
+            && (tiff?.count ?? 0) > 0
+        guard isFinal || embeddedDictionariesAvailable else {
+            return nil
+        }
+        return metadata
     }
 
     private static func string(_ value: Any?) -> String? {
