@@ -217,16 +217,17 @@ struct PhotoServiceTests {
     func embeddedMetadataCancelsEarly() async throws {
         let image = try makeMetadataJPEG()
         let (metadataPrefix, trailingData) = try metadataPrefixAndTrailing(from: image)
-        let stream = CancellablePhotoResourceStream(chunks: [
-            metadataPrefix,
-            trailingData,
-        ])
+        let stream = ManuallyDrivenPhotoResourceStream()
 
         let request = PhotoEmbeddedMetadataResourceRequest(
-            timeoutNanoseconds: 10_000_000_000
+            timeoutNanoseconds: 1_000_000_000
         )
+        let resultTask = Task { await request.read(from: stream) }
+        await stream.waitUntilStarted()
 
-        let result = await request.read(from: stream)
+        stream.send(metadataPrefix)
+        let result = await resultTask.value
+        stream.send(trailingData)
 
         #expect(result.status == .available)
         #expect(result.metadata?.cameraMake == "Camera Maker")
@@ -236,6 +237,27 @@ struct PhotoServiceTests {
         #expect(stream.deliveredChunkCount == 1)
         #expect(stream.deliveredByteCount == metadataPrefix.count)
         #expect(stream.deliveredByteCount < image.count)
+    }
+
+    @Test("Oversized resource chunks parse the permitted prefix before cancellation")
+    func oversizedMetadataChunk() async throws {
+        let image = try makeMetadataJPEG()
+        let (metadataPrefix, _) = try metadataPrefixAndTrailing(from: image)
+        let stream = FakePhotoResourceStream(actions: [
+            .data(image),
+        ])
+        let request = PhotoEmbeddedMetadataResourceRequest(
+            maximumByteCount: metadataPrefix.count,
+            timeoutNanoseconds: 1_000_000_000
+        )
+
+        let result = await request.read(from: stream)
+
+        #expect(result.status == .available)
+        #expect(result.metadata?.cameraMake == "Camera Maker")
+        #expect(result.metadata?.cameraModel == "Camera Model")
+        #expect(result.metadata?.isoSpeedRatings == [125])
+        #expect(stream.cancellationCount == 1)
     }
 
     @Test("Embedded metadata streaming cancels exactly at its byte boundary")
@@ -257,23 +279,43 @@ struct PhotoServiceTests {
 
     @Test("Basic partial properties do not masquerade as complete embedded metadata")
     func partialBasicPropertiesDoNotCompleteEarly() async throws {
-        let image = try makePlainPNG()
-        let stream = CancellablePhotoResourceStream(chunks: [
-            Data(image.prefix(33)),
-            Data(image.dropFirst(33)),
-        ])
-
-        let request = PhotoEmbeddedMetadataResourceRequest(
-            timeoutNanoseconds: 10_000_000_000
+        let image = try makePlainJPEG()
+        let (prefix, trailingData) = try basicPropertiesPrefixAndTrailing(from: image)
+        let source = CGImageSourceCreateIncremental(nil)
+        CGImageSourceUpdateData(source, prefix as CFData, false)
+        let partialProperties = try #require(
+            CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as NSDictionary?
         )
+        #expect(partialProperties[kCGImagePropertyPixelWidth as String] != nil)
+        let partialEXIF = partialProperties[kCGImagePropertyExifDictionary as String]
+            as? NSDictionary
+        let partialTIFF = partialProperties[kCGImagePropertyTIFFDictionary as String]
+            as? NSDictionary
+        #expect((partialEXIF?.count ?? 0) == 0 || (partialTIFF?.count ?? 0) == 0)
 
-        let result = await request.read(from: stream)
+        let parser = IncrementalPhotoMetadataParser()
+        #expect(parser.consume(prefix, isFinal: false) == nil)
+        let metadata = try #require(parser.consume(trailingData, isFinal: true))
 
-        #expect(result.status == .available)
-        #expect(result.metadata?.cameraMake == nil)
-        #expect(stream.cancellationCount == 0)
-        #expect(stream.deliveredChunkCount == 2)
-        #expect(stream.deliveredByteCount == image.count)
+        #expect(metadata.cameraMake == nil)
+        #expect(metadata.cameraModel == nil)
+    }
+
+    @Test("Caller cancellation stops the active metadata resource stream")
+    func embeddedMetadataCallerCancellation() async {
+        let stream = ManuallyDrivenPhotoResourceStream()
+        let request = PhotoEmbeddedMetadataResourceRequest(
+            timeoutNanoseconds: 1_000_000_000
+        )
+        let resultTask = Task { await request.read(from: stream) }
+        await stream.waitUntilStarted()
+
+        resultTask.cancel()
+        let result = await resultTask.value
+
+        #expect(result.status == .unavailable)
+        #expect(result.metadata == nil)
+        #expect(stream.cancellationCount == 1)
     }
 
     @Test("Embedded metadata streaming cancels stalled local reads")
@@ -393,18 +435,20 @@ private nonisolated final class FakePhotoResourceStream:
     }
 }
 
-private nonisolated final class CancellablePhotoResourceStream:
+private nonisolated final class ManuallyDrivenPhotoResourceStream:
     PhotoResourceStreaming,
     @unchecked Sendable
 {
     private struct State {
+        var dataReceived: (@Sendable (Data) -> Void)?
+        var startWaiters: [CheckedContinuation<Void, Never>] = []
+        var isStarted = false
         var isCancelled = false
         var cancellationCount = 0
         var deliveredChunkCount = 0
         var deliveredByteCount = 0
     }
 
-    private let chunks: [Data]
     private let lock = NSLock()
     private var state = State()
 
@@ -420,40 +464,52 @@ private nonisolated final class CancellablePhotoResourceStream:
         lock.withLock { state.deliveredByteCount }
     }
 
-    init(chunks: [Data]) {
-        self.chunks = chunks
-    }
-
     func start(
         dataReceived: @escaping @Sendable (Data) -> Void,
-        completion: @escaping @Sendable (PhotoResourceCompletion) -> Void
+        completion _: @escaping @Sendable (PhotoResourceCompletion) -> Void
     ) -> @Sendable () -> Void {
-        let task = Task.detached { [weak self, chunks] in
-            guard let self else { return }
-            for (index, chunk) in chunks.enumerated() {
-                let shouldDeliver = lock.withLock { () -> Bool in
-                    guard !state.isCancelled else { return false }
-                    state.deliveredChunkCount += 1
-                    state.deliveredByteCount += chunk.count
-                    return true
-                }
-                guard shouldDeliver else { return }
-                dataReceived(chunk)
-                if index < chunks.count - 1 {
-                    try? await Task.sleep(nanoseconds: 25_000_000)
-                    guard !Task.isCancelled else { return }
-                }
-            }
-            completion(.success)
+        let waiters = lock.withLock {
+            state.dataReceived = dataReceived
+            state.isStarted = true
+            let waiters = state.startWaiters
+            state.startWaiters.removeAll()
+            return waiters
         }
+        waiters.forEach { $0.resume() }
         return { [weak self] in
-            guard let self else { return }
-            lock.withLock {
-                guard !state.isCancelled else { return }
-                state.isCancelled = true
-                state.cancellationCount += 1
+            self?.cancel()
+        }
+    }
+
+    func waitUntilStarted() async {
+        await withCheckedContinuation { continuation in
+            let resumeImmediately = lock.withLock { () -> Bool in
+                guard !state.isStarted else { return true }
+                state.startWaiters.append(continuation)
+                return false
             }
-            task.cancel()
+            if resumeImmediately {
+                continuation.resume()
+            }
+        }
+    }
+
+    func send(_ data: Data) {
+        let dataReceived = lock.withLock { () -> (@Sendable (Data) -> Void)? in
+            guard !state.isCancelled else { return nil }
+            state.deliveredChunkCount += 1
+            state.deliveredByteCount += data.count
+            return state.dataReceived
+        }
+        dataReceived?(data)
+    }
+
+    private func cancel() {
+        lock.withLock {
+            guard !state.isCancelled else { return }
+            state.isCancelled = true
+            state.cancellationCount += 1
+            state.dataReceived = nil
         }
     }
 }
@@ -588,8 +644,8 @@ private func makeMetadataJPEG() throws -> Data {
     )
 }
 
-private func makePlainPNG() throws -> Data {
-    try makeTestImage(type: .png, properties: [:])
+private func makePlainJPEG() throws -> Data {
+    try makeTestImage(type: .jpeg, properties: [:])
 }
 
 private func makeTestImage(type: UTType, properties: NSDictionary) throws -> Data {
@@ -638,6 +694,25 @@ private func metadataPrefixAndTrailing(from image: Data) throws -> (Data, Data) 
         return (prefix, Data(image.dropFirst(end)))
     }
     Issue.record("The JPEG fixture did not expose metadata before its trailing image data")
+    throw MetadataFixtureError.noParseablePrefix
+}
+
+private func basicPropertiesPrefixAndTrailing(from image: Data) throws -> (Data, Data) {
+    for end in 1..<image.count {
+        let prefix = Data(image.prefix(end))
+        let source = CGImageSourceCreateIncremental(nil)
+        CGImageSourceUpdateData(source, prefix as CFData, false)
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+                as NSDictionary?,
+              properties[kCGImagePropertyPixelWidth as String] != nil else {
+            continue
+        }
+        let exif = properties[kCGImagePropertyExifDictionary as String] as? NSDictionary
+        let tiff = properties[kCGImagePropertyTIFFDictionary as String] as? NSDictionary
+        guard (exif?.count ?? 0) == 0 || (tiff?.count ?? 0) == 0 else { continue }
+        return (prefix, Data(image.dropFirst(end)))
+    }
+    Issue.record("The image fixture did not expose basic properties before its image data")
     throw MetadataFixtureError.noParseablePrefix
 }
 

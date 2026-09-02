@@ -250,9 +250,7 @@ final class SystemPhotoLibraryReader: PhotoLibraryReading {
             let asset = result.object(at: index)
             let embedded: PhotoEmbeddedMetadataResult
             if index < embeddedMetadataLimit {
-                embedded = await Task.detached(priority: .utility) {
-                    await Self.embeddedMetadata(for: asset)
-                }.value
+                embedded = await Self.embeddedMetadata(for: asset)
             } else {
                 embedded = PhotoEmbeddedMetadataResult(
                     status: .notRequested,
@@ -277,7 +275,8 @@ final class SystemPhotoLibraryReader: PhotoLibraryReading {
         return photos
     }
 
-    private nonisolated static func embeddedMetadata(
+    @concurrent
+    private static func embeddedMetadata(
         for asset: PHAsset
     ) async -> PhotoEmbeddedMetadataResult {
         guard let resource = preferredResource(for: asset) else {
@@ -499,12 +498,16 @@ nonisolated final class PhotoEmbeddedMetadataResourceRequest: @unchecked Sendabl
 
     private func receive(_ data: Data) {
         guard !isFinished else { return }
-        guard data.count <= maximumByteCount - receivedByteCount else {
+        let remainingByteCount = maximumByteCount - receivedByteCount
+        guard remainingByteCount > 0 else {
             finish(unavailableResult, cancellingRequest: true)
             return
         }
-        receivedByteCount += data.count
-        if let metadata = parser.consume(data, isFinal: false) {
+        let acceptedData = data.count > remainingByteCount
+            ? Data(data.prefix(remainingByteCount))
+            : data
+        receivedByteCount += acceptedData.count
+        if let metadata = parser.consume(acceptedData, isFinal: false) {
             finish(
                 PhotoEmbeddedMetadataResult(status: .available, metadata: metadata),
                 cancellingRequest: true
@@ -613,7 +616,7 @@ nonisolated final class PhotoEmbeddedMetadataResourceRequest: @unchecked Sendabl
     }
 }
 
-private nonisolated final class IncrementalPhotoMetadataParser: @unchecked Sendable {
+nonisolated final class IncrementalPhotoMetadataParser: @unchecked Sendable {
     private let source = CGImageSourceCreateIncremental(nil)
     private var data = Data()
 
