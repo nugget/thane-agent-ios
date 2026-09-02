@@ -70,11 +70,33 @@ struct AppRoutingTests {
 
     @Test("Identifier bounds and route shapes fail explicitly")
     func rejectsInvalidIdentifiers() throws {
+        let maximumCounterpartyID = String(repeating: "a", count: 512)
+        let maximumConversationID = String(repeating: "b", count: 128)
+        let maximumDestination = AppDestination.conversation(
+            counterpartyID: maximumCounterpartyID,
+            conversationID: maximumConversationID
+        )
+        let maximumURL = try #require(maximumDestination.externalURL)
+        #expect(try ThaneURLParser.parse(maximumURL) == maximumDestination)
+
+        let oversizedCounterpartyID = String(repeating: "a", count: 513)
+        let oversizedConversationID = String(repeating: "b", count: 129)
         let invalidCases: [(String, ThaneURLParseError)] = [
             ("thane://v1/agents/", .unknownDestination),
             ("thane://v1/agents/%2E%2E", .invalidCounterpartyID),
+            ("thane://v1/agents/thane:one", .invalidCounterpartyID),
+            ("thane://v1/agents/thane+one", .invalidCounterpartyID),
+            ("thane://v1/agents/thane=one", .invalidCounterpartyID),
+            (
+                "thane://v1/agents/\(oversizedCounterpartyID)",
+                .invalidCounterpartyID
+            ),
             (
                 "thane://v1/agents/thane%3Aone/conversations/has%20spaces",
+                .invalidConversationID
+            ),
+            (
+                "thane://v1/agents/thane%3Aone/conversations/\(oversizedConversationID)",
                 .invalidConversationID
             ),
         ]

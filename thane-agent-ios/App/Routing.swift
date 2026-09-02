@@ -103,24 +103,28 @@ nonisolated enum ThaneURLParser {
         )
         guard !encodedSegments.isEmpty,
               encodedSegments.allSatisfy({ !$0.isEmpty }),
-              encodedSegments.first == "agents" else {
+              encodedSegments.first == "agents",
+              encodedSegments.count >= 2 else {
             throw ThaneURLParseError.unknownDestination
         }
+        let counterpartyID = try decodedIdentifier(
+            encodedSegments[1],
+            invalidError: .invalidCounterpartyID
+        )
 
         let destination: AppDestination
         switch encodedSegments.count {
         case 2:
-            destination = .counterparty(
-                counterpartyID: try decodedIdentifier(encodedSegments[1])
-            )
+            destination = .counterparty(counterpartyID: counterpartyID)
         case 3 where encodedSegments[2] == "conversations":
-            destination = .conversations(
-                counterpartyID: try decodedIdentifier(encodedSegments[1])
-            )
+            destination = .conversations(counterpartyID: counterpartyID)
         case 4 where encodedSegments[2] == "conversations":
             destination = .conversation(
-                counterpartyID: try decodedIdentifier(encodedSegments[1]),
-                conversationID: try decodedIdentifier(encodedSegments[3])
+                counterpartyID: counterpartyID,
+                conversationID: try decodedIdentifier(
+                    encodedSegments[3],
+                    invalidError: .invalidConversationID
+                )
             )
         default:
             throw ThaneURLParseError.unknownDestination
@@ -130,9 +134,13 @@ nonisolated enum ThaneURLParser {
         return destination
     }
 
-    private static func decodedIdentifier(_ value: Substring) throws -> String {
-        guard let decoded = String(value).removingPercentEncoding else {
-            throw ThaneURLParseError.unknownDestination
+    private static func decodedIdentifier(
+        _ value: Substring,
+        invalidError: ThaneURLParseError
+    ) throws -> String {
+        guard AppDestinationValidator.hasValidEncodedSegmentSyntax(value),
+              let decoded = String(value).removingPercentEncoding else {
+            throw invalidError
         }
         return decoded
     }
@@ -274,6 +282,25 @@ private nonisolated enum AppDestinationValidator {
         .joined()
     }
 
+    static func hasValidEncodedSegmentSyntax(_ value: Substring) -> Bool {
+        let bytes = Array(value.utf8)
+        var index = 0
+        while index < bytes.count {
+            if isUnreserved(bytes[index]) {
+                index += 1
+                continue
+            }
+            guard bytes[index] == UInt8(ascii: "%"),
+                  index + 2 < bytes.count,
+                  isHexDigit(bytes[index + 1]),
+                  isHexDigit(bytes[index + 2]) else {
+                return false
+            }
+            index += 3
+        }
+        return true
+    }
+
     private static func isValidCounterpartyID(_ value: String) -> Bool {
         isValidIdentifier(value, maximumLength: maximumCounterpartyIDLength) { byte in
             isUnreserved(byte) || [
@@ -311,6 +338,17 @@ private nonisolated enum AppDestinationValidator {
              UInt8(ascii: "0")...UInt8(ascii: "9"),
              UInt8(ascii: "-"), UInt8(ascii: "."),
              UInt8(ascii: "_"), UInt8(ascii: "~"):
+            true
+        default:
+            false
+        }
+    }
+
+    private static func isHexDigit(_ byte: UInt8) -> Bool {
+        switch byte {
+        case UInt8(ascii: "0")...UInt8(ascii: "9"),
+             UInt8(ascii: "A")...UInt8(ascii: "F"),
+             UInt8(ascii: "a")...UInt8(ascii: "f"):
             true
         default:
             false
