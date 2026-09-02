@@ -11,6 +11,7 @@ struct SharingView: View {
                 recipientCard
                 systemContextCard
                 locationCard
+                photosCard
                 disclosureCard
             }
             .padding(.horizontal)
@@ -156,6 +157,53 @@ struct SharingView: View {
         }
     }
 
+    private var photosCard: some View {
+        AppCard(title: "Photos") {
+            Toggle(isOn: Binding(
+                get: { profile.sharingPreferences.photosEnabled },
+                set: { enabled in
+                    Task {
+                        await profile.setPhotoSharing(enabled: enabled)
+                    }
+                }
+            )) {
+                PreferenceLabel(
+                    title: "Recent Photo Metadata",
+                    detail: "Shares metadata for up to 10 recent visible photos: dates, dimensions, favorite state, saved location, and selected camera, lens, and exposure fields. Photo pixels and hidden assets are never included."
+                )
+            }
+            .disabled(!canEditSharing)
+
+            if profile.photoService.authorizationStatus != .notDetermined {
+                Divider()
+
+                OperationalRow(
+                    title: "Library Access",
+                    value: photoPermissionLabel,
+                    systemImage: "photo.on.rectangle.angled",
+                    color: photoPermissionColor
+                )
+
+                if photoPermissionNeedsSettings {
+                    Button("Open iOS Settings") {
+                        profile.openIOSSettings()
+                    }
+                    .buttonStyle(.bordered)
+                    .frame(maxWidth: .infinity)
+                }
+            }
+
+            Divider()
+
+            Label(
+                "Embedded metadata is read only when the original is already on this iPhone. This source never downloads an iCloud original.",
+                systemImage: "icloud.slash"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+    }
+
     private var disclosureCard: some View {
         AppCard {
             Label("Controlled on this iPhone", systemImage: "hand.raised.fill")
@@ -230,6 +278,31 @@ struct SharingView: View {
             return .red
         }
         return profile.locationService.isBackgroundMonitoringActive ? .green : .orange
+    }
+
+    private var photoPermissionLabel: String {
+        switch profile.photoService.authorizationStatus {
+        case .notDetermined: "Not requested"
+        case .restricted: "Restricted"
+        case .denied: "Denied"
+        case .limited: "Selected Photos"
+        case .full: "Full Library"
+        }
+    }
+
+    private var photoPermissionColor: Color {
+        switch profile.photoService.authorizationStatus {
+        case .full: .green
+        case .limited, .notDetermined: .orange
+        case .denied, .restricted: .red
+        }
+    }
+
+    private var photoPermissionNeedsSettings: Bool {
+        switch profile.photoService.authorizationStatus {
+        case .limited, .denied, .restricted: true
+        case .notDetermined, .full: false
+        }
     }
 }
 

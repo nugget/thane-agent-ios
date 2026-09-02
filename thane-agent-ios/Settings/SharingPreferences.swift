@@ -53,6 +53,9 @@ final class SharingPreferences {
     var backgroundLocationEnabled: Bool {
         didSet { persist(backgroundLocationEnabled, key: "background-location") }
     }
+    var photosEnabled: Bool {
+        didSet { persist(photosEnabled, key: "photos") }
+    }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -62,6 +65,7 @@ final class SharingPreferences {
         networkEnabled = false
         locationEnabled = false
         backgroundLocationEnabled = false
+        photosEnabled = false
     }
 
     var enabledSystemCategories: Set<SystemContextCategory> {
@@ -69,7 +73,7 @@ final class SharingPreferences {
     }
 
     var hasEnabledData: Bool {
-        !enabledSystemCategories.isEmpty || locationEnabled
+        !enabledSystemCategories.isEmpty || locationEnabled || photosEnabled
     }
 
     func isEnabled(_ category: SystemContextCategory) -> Bool {
@@ -102,6 +106,7 @@ final class SharingPreferences {
             networkEnabled = false
             locationEnabled = false
             backgroundLocationEnabled = false
+            photosEnabled = false
             return
         }
 
@@ -128,6 +133,10 @@ final class SharingPreferences {
         locationEnabled = storedLocationEnabled
         backgroundLocationEnabled = storedLocationEnabled
             && storedBackgroundLocationEnabled
+        photosEnabled = storedValue(
+            for: "photos",
+            counterpartyID: counterpartyID
+        )
         if !storedLocationEnabled, storedBackgroundLocationEnabled {
             defaults.set(
                 false,
@@ -177,6 +186,7 @@ final class SharingPreferences {
         SystemContextCategory.network.rawValue,
         "location",
         "background-location",
+        "photos",
     ]
 
     private nonisolated static func legacyKey(_ suffix: String) -> String {

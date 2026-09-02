@@ -18,6 +18,11 @@ outbox when an opted-in system event gives it background execution time.
 - `ios.location` background observations: optional significant-change updates
   after a separate in-app opt-in and Always authorization. iOS, not Thane,
   decides when those events are delivered.
+- `ios.photos` / `ios_recent_photos`: a bounded list of recent visible-photo
+  metadata after a separate in-app opt-in and Photos authorization. It includes
+  PhotoKit dates, dimensions, favorite state, saved location, and selected
+  EXIF/TIFF camera fields when the original is already local. It never returns
+  pixels, hidden assets, raw PhotoKit identifiers, or downloads from iCloud.
 
 Every category defaults off. A connected Thane receives only categories the
 operator enabled in the app. Background events are coalesced by kind, protected
@@ -103,4 +108,7 @@ should not be bundled behind a single broad consent switch.
 The broader identity-first product arc is tracked in
 [roadmap issue #8](https://github.com/nugget/thane-agent-ios/issues/8), including
 identity continuity, typed URL handling, notifications and inbox, and a
-protocol-neutral conversation surface.
+protocol-neutral conversation surface. Conversation transport and synchronized
+history remain server-owned future work under
+[thane-ai-agent issue #1502](https://github.com/nugget/thane-ai-agent/issues/1502);
+Signal remains the operator communication channel in the meantime.

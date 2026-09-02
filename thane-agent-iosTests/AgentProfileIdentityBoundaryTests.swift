@@ -5,6 +5,44 @@ import Testing
 @Suite("App identity boundary")
 @MainActor
 struct AgentProfileIdentityBoundaryTests {
+    @Test("Photos authorization cannot enable sharing for a replacement counterparty")
+    func photosAuthorizationCannotCrossCounterparties() async throws {
+        let firstEvidence = try IdentityTestFixture.freshEvidence()
+        let secondEvidence = ThaneIdentityEvidence(
+            schemaVersion: firstEvidence.schemaVersion,
+            observedAt: firstEvidence.observedAt,
+            instance: ThaneInstanceIdentity(
+                id: "thane:ed25519:SHA256:replacement",
+                name: "replacement",
+                identityKey: PublicIdentityMaterial(
+                    algorithm: "ed25519",
+                    fingerprint: "SHA256:replacement"
+                ),
+                channelCA: firstEvidence.instance.channelCA
+            ),
+            core: firstEvidence.core
+        )
+        let photoLibrary = DeferredAuthorizationPhotoLibrary()
+        let fixture = try AppIdentityFixture(
+            evidence: firstEvidence,
+            pinnedEvidence: firstEvidence,
+            photoLibrary: photoLibrary
+        )
+        defer { fixture.cleanup() }
+
+        let authorization = Task { @MainActor in
+            await fixture.profile.setPhotoSharing(enabled: true)
+        }
+        try await waitUntil { photoLibrary.hasPendingAuthorization }
+        await fixture.profile.forgetThane()
+        fixture.profile.pin(secondEvidence)
+        photoLibrary.resumeAuthorization(.full)
+        await authorization.value
+
+        #expect(fixture.profile.sharingPreferences.counterpartyID == secondEvidence.instance.id)
+        #expect(fixture.profile.sharingPreferences.photosEnabled == false)
+    }
+
     @Test("First connection waits for an explicit identity pin")
     func firstConnectionWaitsForPin() async throws {
         let evidence = try IdentityTestFixture.freshEvidence()
@@ -188,7 +226,9 @@ struct AgentProfileIdentityBoundaryTests {
         fixture.profile.connectUsingCurrentValues()
         try await fixture.waitForIdentityRefresh()
         fixture.profile.setSystemCategory(.regional, enabled: true)
+        fixture.profile.sharingPreferences.photosEnabled = true
         #expect(fixture.profile.sharingPreferences.regionalEnabled)
+        #expect(fixture.profile.sharingPreferences.photosEnabled)
 
         await fixture.profile.forgetThane()
 
@@ -199,6 +239,7 @@ struct AgentProfileIdentityBoundaryTests {
         fixture.profile.pinPresentedIdentity()
         #expect(fixture.profile.sharingPreferences.counterpartyID == evidence.instance.id)
         #expect(fixture.profile.sharingPreferences.regionalEnabled)
+        #expect(fixture.profile.sharingPreferences.photosEnabled)
         fixture.profile.disconnect()
     }
 
@@ -311,6 +352,7 @@ struct AgentProfileIdentityBoundaryTests {
         let originalClientID = fixture.profile.connectionSettings.pairwiseClientID
 
         fixture.profile.setSystemCategory(.regional, enabled: true)
+        fixture.profile.sharingPreferences.photosEnabled = true
         await fixture.profile.removeConnection()
 
         #expect(!fixture.profile.hasConnectionConfiguration)
@@ -340,6 +382,7 @@ struct AgentProfileIdentityBoundaryTests {
         defer { fixture.cleanup() }
 
         fixture.profile.setSystemCategory(.regional, enabled: true)
+        fixture.profile.sharingPreferences.photosEnabled = true
         await fixture.profile.forgetThane()
         await fixture.profile.removeConnection()
 
@@ -422,7 +465,8 @@ private final class AppIdentityFixture {
         evidence: ThaneIdentityEvidence,
         pinnedEvidence: ThaneIdentityEvidence? = nil,
         identityService: IdentityService? = nil,
-        connectionEnabled: Bool = false
+        connectionEnabled: Bool = false,
+        photoLibrary: (any PhotoLibraryReading)? = nil
     ) throws {
         suite = "AgentProfileIdentityBoundaryTests.\(UUID().uuidString)"
         defaults = try #require(UserDefaults(suiteName: suite))
@@ -462,7 +506,8 @@ private final class AppIdentityFixture {
                 fetcher: AppIdentityFetcher(evidence: evidence)
             ),
             identityPinning: pinning,
-            inboxStore: inboxStore
+            inboxStore: inboxStore,
+            photoLibrary: photoLibrary
         )
     }
 
@@ -490,6 +535,35 @@ private final class AppIdentityFixture {
         profile.disconnect()
         defaults.removePersistentDomain(forName: suite)
         try? FileManager.default.removeItem(at: directoryURL)
+    }
+}
+
+@MainActor
+private final class DeferredAuthorizationPhotoLibrary: PhotoLibraryReading {
+    var authorizationStatus: PhotoAuthorizationState = .notDetermined
+    private(set) var hasPendingAuthorization = false
+    private var authorizationContinuation: CheckedContinuation<PhotoAuthorizationState, Never>?
+
+    func requestAuthorization() async -> PhotoAuthorizationState {
+        hasPendingAuthorization = true
+        return await withCheckedContinuation { continuation in
+            authorizationContinuation = continuation
+        }
+    }
+
+    func fetchRecentPhotos(
+        limit _: Int,
+        embeddedMetadataLimit _: Int
+    ) async throws -> [PhotoLibraryAsset] {
+        []
+    }
+
+    func resumeAuthorization(_ status: PhotoAuthorizationState) {
+        authorizationStatus = status
+        hasPendingAuthorization = false
+        let continuation = authorizationContinuation
+        authorizationContinuation = nil
+        continuation?.resume(returning: status)
     }
 }
 

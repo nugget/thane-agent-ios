@@ -12,6 +12,7 @@ final class AgentProfile: Identifiable {
     let connection: ServerConnection
     let platformRouter: PlatformServiceRouter
     let locationService: LocationService
+    let photoService: PhotoService
     let observationPublisher: ObservationPublisher
     let identityService: IdentityService
     let identityPinning: IdentityPinningService
@@ -32,7 +33,8 @@ final class AgentProfile: Identifiable {
         identityService: IdentityService = IdentityService(),
         identityPinning: IdentityPinningService? = nil,
         conversationStore: ConversationStore = ConversationStore(),
-        inboxStore: InboxStore? = nil
+        inboxStore: InboxStore? = nil,
+        photoLibrary: (any PhotoLibraryReading)? = nil
     ) {
         let identityPinning = identityPinning ?? IdentityPinningService(
             connectionID: connectionSettings.connectionID
@@ -63,11 +65,17 @@ final class AgentProfile: Identifiable {
         let router = PlatformServiceRouter()
         let systemService = SystemContextService(preferences: sharingPreferences)
         let locationService = LocationService(preferences: sharingPreferences)
+        let photoService = PhotoService(
+            preferences: sharingPreferences,
+            library: photoLibrary ?? SystemPhotoLibraryReader(),
+            identifierNamespace: { connectionSettings.pairwiseClientID }
+        )
 
         self.connection = connection
         platformRouter = router
         systemContextService = systemService
         self.locationService = locationService
+        self.photoService = photoService
 
         locationService.onSignificantLocation = { [weak observationPublisher] snapshot in
             observationPublisher?.publishLocation(snapshot)
@@ -87,6 +95,10 @@ final class AgentProfile: Identifiable {
         router.register(
             capability: "ios.location",
             handler: LocationPlatformHandler(service: locationService)
+        )
+        router.register(
+            capability: "ios.photos",
+            handler: PhotoPlatformHandler(service: photoService)
         )
         connection.registeredCapabilities = router.capabilities
         connection.onPlatformRequest = { [weak router] request in
@@ -235,6 +247,7 @@ final class AgentProfile: Identifiable {
 
     func activate() {
         locationService.restoreBackgroundMonitoringIfAuthorized()
+        photoService.refreshAuthorizationStatus()
         // A foreground transition must revalidate the current endpoint and
         // token before either transport can release private data.
         suspendPrivateDelivery()
@@ -419,6 +432,41 @@ final class AgentProfile: Identifiable {
         }
     }
 
+    func setPhotoSharing(enabled: Bool) async {
+        configurationError = nil
+        guard let counterpartyID = sharingPreferences.counterpartyID,
+              counterpartyID == identityPinning.pin?.identityID else {
+            configurationError = "Pin this agent before changing what is shared with it."
+            return
+        }
+        guard enabled else {
+            sharingPreferences.photosEnabled = false
+            photoService.cancelPendingRequestAfterConsentRevocation()
+            return
+        }
+
+        let authorization = await photoService.requestAuthorizationFromOperatorAction()
+        guard sharingPreferences.counterpartyID == counterpartyID,
+              identityPinning.pin?.identityID == counterpartyID else {
+            return
+        }
+        if authorization.permitsRead {
+            sharingPreferences.photosEnabled = true
+        } else {
+            sharingPreferences.photosEnabled = false
+            configurationError = switch authorization {
+            case .notDetermined:
+                "Photos permission was not selected."
+            case .denied:
+                "Photos permission is denied. It can be changed in iOS Settings."
+            case .restricted:
+                "Photos access is restricted on this device."
+            case .limited, .full:
+                nil
+            }
+        }
+    }
+
     func openIOSSettings() {
         guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
         UIApplication.shared.open(url)
@@ -460,6 +508,7 @@ final class AgentProfile: Identifiable {
 
     private func applySharingScope(_ counterpartyID: String?) {
         locationService.suspendForCounterpartyChange()
+        photoService.suspendForCounterpartyChange()
         sharingPreferences.scope(to: counterpartyID)
         systemContextService.setNetworkObservationEnabled(sharingPreferences.networkEnabled)
         systemContextService.setDeviceObservationEnabled(sharingPreferences.deviceEnabled)

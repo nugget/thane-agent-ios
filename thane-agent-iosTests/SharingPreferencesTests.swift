@@ -17,6 +17,7 @@ struct SharingPreferencesTests {
         #expect(preferences.enabledSystemCategories.isEmpty)
         #expect(preferences.locationEnabled == false)
         #expect(preferences.backgroundLocationEnabled == false)
+        #expect(preferences.photosEnabled == false)
         #expect(preferences.hasEnabledData == false)
     }
 
@@ -31,12 +32,14 @@ struct SharingPreferencesTests {
         preferences.setEnabled(true, for: .regional)
         preferences.locationEnabled = true
         preferences.backgroundLocationEnabled = true
+        preferences.photosEnabled = true
 
         let restored = SharingPreferences(defaults: defaults)
         restored.scope(to: "thane:one")
         #expect(restored.regionalEnabled)
         #expect(restored.locationEnabled)
         #expect(restored.backgroundLocationEnabled)
+        #expect(restored.photosEnabled)
         #expect(restored.deviceEnabled == false)
         #expect(restored.networkEnabled == false)
     }
@@ -73,6 +76,7 @@ struct SharingPreferencesTests {
         preferences.scope(to: "thane:one")
         preferences.deviceEnabled = true
         preferences.locationEnabled = true
+        preferences.photosEnabled = true
 
         preferences.scope(to: "thane:two")
         #expect(preferences.hasEnabledData == false)
@@ -81,6 +85,7 @@ struct SharingPreferencesTests {
         preferences.scope(to: "thane:one")
         #expect(preferences.deviceEnabled)
         #expect(preferences.locationEnabled)
+        #expect(preferences.photosEnabled)
         #expect(preferences.networkEnabled == false)
 
         preferences.scope(to: "thane:two")
@@ -134,12 +139,15 @@ struct SharingPreferencesTests {
         let preferences = SharingPreferences(defaults: defaults)
         preferences.scope(to: "thane:one")
         preferences.regionalEnabled = true
+        preferences.photosEnabled = true
 
         preferences.scope(to: nil)
         #expect(preferences.counterpartyID == nil)
         #expect(preferences.hasEnabledData == false)
+        #expect(preferences.photosEnabled == false)
 
         preferences.regionalEnabled = true
+        preferences.photosEnabled = true
         let restored = SharingPreferences(defaults: defaults)
         #expect(restored.hasEnabledData == false)
     }
@@ -155,6 +163,7 @@ struct SharingPreferencesTests {
         preferences.regionalEnabled = true
         preferences.scope(to: "thane:two")
         preferences.networkEnabled = true
+        preferences.photosEnabled = true
 
         preferences.removeScope(for: "thane:one")
         preferences.scope(to: "thane:one")
@@ -162,5 +171,6 @@ struct SharingPreferencesTests {
 
         preferences.scope(to: "thane:two")
         #expect(preferences.networkEnabled)
+        #expect(preferences.photosEnabled)
     }
 }
