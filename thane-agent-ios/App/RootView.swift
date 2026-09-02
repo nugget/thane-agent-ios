@@ -1,28 +1,23 @@
 import SwiftUI
 
 private enum AppSection: Hashable {
-    case thane
-    case context
+    case chats
     case settings
 }
 
 struct RootView: View {
-    @State private var selection: AppSection = .thane
+    @Environment(AppState.self) private var appState
+    @State private var selection: AppSection = .chats
 
     var body: some View {
         TabView(selection: $selection) {
-            Tab("Thane", systemImage: "point.3.connected.trianglepath.dotted", value: .thane) {
+            Tab("Chats", systemImage: "bubble.left.and.bubble.right", value: .chats) {
                 NavigationStack {
-                    ThaneHomeView {
+                    ChatView {
                         selection = .settings
                     }
                 }
-            }
-
-            Tab("Context", systemImage: "sensor.tag.radiowaves.forward", value: .context) {
-                NavigationStack {
-                    ContextView()
-                }
+                .id(appState.counterparty?.id)
             }
 
             Tab("Settings", systemImage: "gearshape", value: .settings) {
@@ -32,10 +27,21 @@ struct RootView: View {
             }
         }
         .tabViewStyle(.sidebarAdaptable)
+        .preferredColorScheme(preferredColorScheme)
+    }
+
+    private var preferredColorScheme: ColorScheme? {
+        switch appState.appPreferences.appearance {
+        case .automatic: nil
+        case .light: .light
+        case .dark: .dark
+        }
     }
 }
 
+#if DEBUG
 #Preview {
     RootView()
-        .environment(AppState())
+        .environment(PreviewFixtures.appState())
 }
+#endif

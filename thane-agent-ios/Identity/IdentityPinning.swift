@@ -21,8 +21,8 @@ nonisolated struct ThaneIdentityPin: Codable, Equatable, Sendable {
 
     func matches(_ evidence: ThaneIdentityEvidence) -> Bool {
         identityID == evidence.instance.id
-            && identityKey == evidence.instance.identityKey
-            && channelCA == evidence.instance.channelCA
+            && identityKey.hasSameIdentity(as: evidence.instance.identityKey)
+            && channelCA.hasSameIdentity(as: evidence.instance.channelCA)
     }
 
     var shortFingerprint: String {
@@ -36,6 +36,12 @@ nonisolated struct ThaneIdentityPin: Codable, Equatable, Sendable {
         case identityKey = "identity_key"
         case channelCA = "channel_ca"
         case pinnedAt = "pinned_at"
+    }
+}
+
+private extension PublicIdentityMaterial {
+    nonisolated func hasSameIdentity(as other: PublicIdentityMaterial) -> Bool {
+        algorithm == other.algorithm && fingerprint == other.fingerprint
     }
 }
 
@@ -65,7 +71,7 @@ nonisolated enum IdentityContinuityState: Equatable, Sendable {
     }
 
     var permitsPrivateDelivery: Bool {
-        self == .matching || self == .stale
+        self == .matching
     }
 }
 
@@ -92,18 +98,24 @@ nonisolated enum IdentityPinError: LocalizedError, Equatable {
 @Observable
 @MainActor
 final class IdentityPinningService {
-    private nonisolated static let pinAccount = "thane-identity-pin"
-
     private(set) var pin: ThaneIdentityPin?
     private(set) var lastError: String?
+    private(set) var connectionID: String
 
     private let secureStore: any CredentialStoring
     private var blockingError: IdentityPinError?
 
-    init(secureStore: any CredentialStoring = KeychainCredentialStore()) {
+    init(
+        connectionID: String,
+        secureStore: any CredentialStoring = KeychainCredentialStore()
+    ) {
+        self.connectionID = connectionID
         self.secureStore = secureStore
         do {
-            pin = try Self.loadPin(from: secureStore)
+            pin = try Self.loadPin(
+                from: secureStore,
+                scope: ConnectionSecurityScope(connectionID: connectionID)
+            )
         } catch let error as IdentityPinError {
             pin = nil
             blockingError = error
@@ -124,23 +136,71 @@ final class IdentityPinningService {
         guard let value = String(data: data, encoding: .utf8) else {
             throw IdentityPinError.corruptPin
         }
-        try secureStore.save(value, account: Self.pinAccount)
+        try secureStore.save(value, account: securityScope.identityPinAccount)
+        try secureStore.delete(account: ConnectionSecurityScope.legacyIdentityPinAccount)
         pin = newPin
         blockingError = nil
         lastError = nil
     }
 
     func forget() throws {
-        try secureStore.delete(account: Self.pinAccount)
+        try secureStore.delete(account: securityScope.identityPinAccount)
+        try secureStore.delete(account: ConnectionSecurityScope.legacyIdentityPinAccount)
         pin = nil
         blockingError = nil
         lastError = nil
     }
 
-    private static func loadPin(from store: any CredentialStoring) throws -> ThaneIdentityPin? {
-        guard let value = try store.load(account: pinAccount),
-              let data = value.data(using: .utf8) else {
+    func changeScope(to newConnectionID: String) throws {
+        guard connectionID != newConnectionID else { return }
+        connectionID = newConnectionID
+        do {
+            pin = try Self.loadPin(
+                from: secureStore,
+                scope: ConnectionSecurityScope(connectionID: newConnectionID)
+            )
+            blockingError = nil
+            lastError = nil
+        } catch let error as IdentityPinError {
+            pin = nil
+            blockingError = error
+            lastError = error.localizedDescription
+            throw error
+        } catch {
+            let pinError = IdentityPinError.storageUnavailable(error.localizedDescription)
+            pin = nil
+            blockingError = pinError
+            lastError = pinError.localizedDescription
+            throw pinError
+        }
+    }
+
+    private var securityScope: ConnectionSecurityScope {
+        ConnectionSecurityScope(connectionID: connectionID)
+    }
+
+    private static func loadPin(
+        from store: any CredentialStoring,
+        scope: ConnectionSecurityScope
+    ) throws -> ThaneIdentityPin? {
+        if let scopedValue = try store.load(account: scope.identityPinAccount) {
+            try store.delete(account: ConnectionSecurityScope.legacyIdentityPinAccount)
+            return try decodePin(scopedValue)
+        }
+        guard let legacyValue = try store.load(
+            account: ConnectionSecurityScope.legacyIdentityPinAccount
+        ) else {
             return nil
+        }
+        let pin = try decodePin(legacyValue)
+        try store.save(legacyValue, account: scope.identityPinAccount)
+        try store.delete(account: ConnectionSecurityScope.legacyIdentityPinAccount)
+        return pin
+    }
+
+    private static func decodePin(_ value: String) throws -> ThaneIdentityPin {
+        guard let data = value.data(using: .utf8) else {
+            throw IdentityPinError.corruptPin
         }
         let pin: ThaneIdentityPin
         do {

@@ -1,5 +1,15 @@
 import Foundation
 
+nonisolated struct ObservationDeliveryScope: Codable, Equatable, Sendable {
+    let connectionID: String
+    let identityID: String
+
+    enum CodingKeys: String, CodingKey {
+        case connectionID = "connection_id"
+        case identityID = "identity_id"
+    }
+}
+
 nonisolated enum ObservationKind: String, Codable, CaseIterable, Sendable {
     case location = "ios.location"
     case systemContext = "ios.system-context"

@@ -30,8 +30,13 @@ nonisolated enum SystemContextCategory: String, CaseIterable, Identifiable, Send
 @Observable
 @MainActor
 final class SharingPreferences {
-    private nonisolated static let keyPrefix = "sharing."
+    private nonisolated static let legacyKeyPrefix = "sharing."
+    private nonisolated static let scopedKeyPrefix = "sharing.counterparty."
+    private nonisolated static let migrationKey = "sharing.scoped-migration-complete"
     private let defaults: UserDefaults
+    private var isLoadingScope = false
+
+    private(set) var counterpartyID: String?
 
     var regionalEnabled: Bool {
         didSet { persist(regionalEnabled, key: SystemContextCategory.regional.rawValue) }
@@ -51,13 +56,12 @@ final class SharingPreferences {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        regionalEnabled = defaults.bool(forKey: Self.key(SystemContextCategory.regional.rawValue))
-        deviceEnabled = defaults.bool(forKey: Self.key(SystemContextCategory.device.rawValue))
-        networkEnabled = defaults.bool(forKey: Self.key(SystemContextCategory.network.rawValue))
-        let storedLocationEnabled = defaults.bool(forKey: Self.key("location"))
-        locationEnabled = storedLocationEnabled
-        backgroundLocationEnabled = storedLocationEnabled
-            && defaults.bool(forKey: Self.key("background-location"))
+        counterpartyID = nil
+        regionalEnabled = false
+        deviceEnabled = false
+        networkEnabled = false
+        locationEnabled = false
+        backgroundLocationEnabled = false
     }
 
     var enabledSystemCategories: Set<SystemContextCategory> {
@@ -84,11 +88,103 @@ final class SharingPreferences {
         }
     }
 
-    private func persist(_ enabled: Bool, key: String) {
-        defaults.set(enabled, forKey: Self.key(key))
+    func scope(to counterpartyID: String?) {
+        migrateLegacyValuesIfNeeded(to: counterpartyID)
+        guard self.counterpartyID != counterpartyID else { return }
+
+        self.counterpartyID = counterpartyID
+        isLoadingScope = true
+        defer { isLoadingScope = false }
+
+        guard let counterpartyID else {
+            regionalEnabled = false
+            deviceEnabled = false
+            networkEnabled = false
+            locationEnabled = false
+            backgroundLocationEnabled = false
+            return
+        }
+
+        regionalEnabled = storedValue(
+            for: SystemContextCategory.regional.rawValue,
+            counterpartyID: counterpartyID
+        )
+        deviceEnabled = storedValue(
+            for: SystemContextCategory.device.rawValue,
+            counterpartyID: counterpartyID
+        )
+        networkEnabled = storedValue(
+            for: SystemContextCategory.network.rawValue,
+            counterpartyID: counterpartyID
+        )
+        let storedLocationEnabled = storedValue(
+            for: "location",
+            counterpartyID: counterpartyID
+        )
+        let storedBackgroundLocationEnabled = storedValue(
+            for: "background-location",
+            counterpartyID: counterpartyID
+        )
+        locationEnabled = storedLocationEnabled
+        backgroundLocationEnabled = storedLocationEnabled
+            && storedBackgroundLocationEnabled
+        if !storedLocationEnabled, storedBackgroundLocationEnabled {
+            defaults.set(
+                false,
+                forKey: Self.scopedKey(counterpartyID, "background-location")
+            )
+        }
     }
 
-    private nonisolated static func key(_ suffix: String) -> String {
-        keyPrefix + suffix
+    func removeScope(for counterpartyID: String) {
+        for suffix in Self.preferenceSuffixes {
+            defaults.removeObject(forKey: Self.scopedKey(counterpartyID, suffix))
+        }
+        if self.counterpartyID == counterpartyID {
+            scope(to: nil)
+        }
     }
+
+    private func persist(_ enabled: Bool, key: String) {
+        guard !isLoadingScope, let counterpartyID else { return }
+        defaults.set(enabled, forKey: Self.scopedKey(counterpartyID, key))
+    }
+
+    private func storedValue(for suffix: String, counterpartyID: String) -> Bool {
+        defaults.bool(forKey: Self.scopedKey(counterpartyID, suffix))
+    }
+
+    private func migrateLegacyValuesIfNeeded(to counterpartyID: String?) {
+        guard !defaults.bool(forKey: Self.migrationKey) else { return }
+
+        for suffix in Self.preferenceSuffixes {
+            let legacyKey = Self.legacyKey(suffix)
+            guard defaults.object(forKey: legacyKey) != nil else { continue }
+            if let counterpartyID {
+                defaults.set(
+                    defaults.bool(forKey: legacyKey),
+                    forKey: Self.scopedKey(counterpartyID, suffix)
+                )
+            }
+            defaults.removeObject(forKey: legacyKey)
+        }
+        defaults.set(true, forKey: Self.migrationKey)
+    }
+
+    private nonisolated static let preferenceSuffixes = [
+        SystemContextCategory.regional.rawValue,
+        SystemContextCategory.device.rawValue,
+        SystemContextCategory.network.rawValue,
+        "location",
+        "background-location",
+    ]
+
+    private nonisolated static func legacyKey(_ suffix: String) -> String {
+        legacyKeyPrefix + suffix
+    }
+
+    private nonisolated static func scopedKey(_ counterpartyID: String, _ suffix: String) -> String {
+        scopedKeyPrefix + counterpartyID + "." + suffix
+    }
+
 }

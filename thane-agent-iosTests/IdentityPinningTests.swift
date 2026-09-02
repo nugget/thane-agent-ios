@@ -5,22 +5,74 @@ import Testing
 @Suite("Identity pinning")
 @MainActor
 struct IdentityPinningTests {
+    private let connectionID = "connection-one"
+
     @Test("A pin persists the exact stable identity material")
     func persistenceAndMatching() throws {
         let evidence = try IdentityTestFixture.evidence()
         let store = IdentityPinTestStore()
-        let service = IdentityPinningService(secureStore: store)
+        let service = IdentityPinningService(connectionID: connectionID, secureStore: store)
         let pinnedAt = Date(timeIntervalSince1970: 1_777_777_777)
 
         try service.pin(evidence, at: pinnedAt)
-        let restored = IdentityPinningService(secureStore: store)
+        let restored = IdentityPinningService(connectionID: connectionID, secureStore: store)
 
         #expect(restored.pin?.identityID == evidence.instance.id)
         #expect(restored.pin?.identityKey == evidence.instance.identityKey)
         #expect(restored.pin?.channelCA == evidence.instance.channelCA)
         #expect(restored.pin?.pinnedAt == pinnedAt)
         #expect(restored.pin?.matches(evidence) == true)
-        #expect(store.savedAccounts == ["thane-identity-pin"])
+        #expect(store.savedAccounts == ["thane-identity-pin.connection-one"])
+    }
+
+    @Test("Identity pins are isolated between connection profiles")
+    func connectionScopeIsolation() throws {
+        let evidence = try IdentityTestFixture.evidence()
+        let store = IdentityPinTestStore()
+        let first = IdentityPinningService(connectionID: "connection-one", secureStore: store)
+        try first.pin(evidence)
+
+        let second = IdentityPinningService(connectionID: "connection-two", secureStore: store)
+
+        #expect(first.pin?.matches(evidence) == true)
+        #expect(second.pin == nil)
+        #expect(store.value(account: "thane-identity-pin.connection-one") != nil)
+        #expect(store.value(account: "thane-identity-pin.connection-two") == nil)
+    }
+
+    @Test("A failed scope load commits the new scope in a fail-closed state")
+    func failedScopeChangeIsFailClosed() throws {
+        let evidence = try IdentityTestFixture.evidence()
+        let store = IdentityPinTestStore()
+        let service = IdentityPinningService(connectionID: connectionID, secureStore: store)
+        try service.pin(evidence)
+        store.failingLoadAccounts.insert("thane-identity-pin.connection-two")
+
+        #expect(throws: IdentityPinError.self) {
+            try service.changeScope(to: "connection-two")
+        }
+        #expect(service.connectionID == "connection-two")
+        #expect(service.pin == nil)
+        #expect(service.lastError != nil)
+        #expect(throws: IdentityPinError.self) {
+            try service.pin(evidence)
+        }
+    }
+
+    @Test("A legacy global pin migrates into the current connection profile")
+    func legacyPinMigration() throws {
+        let evidence = try IdentityTestFixture.evidence()
+        let encoded = try JSONEncoder().encode(ThaneIdentityPin(evidence: evidence))
+        let value = try #require(String(data: encoded, encoding: .utf8))
+        let store = IdentityPinTestStore(values: [
+            ConnectionSecurityScope.legacyIdentityPinAccount: value,
+        ])
+
+        let service = IdentityPinningService(connectionID: connectionID, secureStore: store)
+
+        #expect(service.pin?.matches(evidence) == true)
+        #expect(store.value(account: "thane-identity-pin.connection-one") == value)
+        #expect(store.value(account: ConnectionSecurityScope.legacyIdentityPinAccount) == nil)
     }
 
     @Test("Display-name changes do not change stable identity")
@@ -37,6 +89,26 @@ struct IdentityPinningTests {
         )
 
         #expect(ThaneIdentityPin(evidence: evidence).matches(renamed))
+    }
+
+    @Test("Additive certificate metadata does not change pinned continuity")
+    func certificateMetadataDoesNotAffectMatch() throws {
+        let evidence = try IdentityTestFixture.evidence()
+        let legacyEvidence = replacingInstance(
+            in: evidence,
+            with: ThaneInstanceIdentity(
+                id: evidence.instance.id,
+                name: evidence.instance.name,
+                identityKey: evidence.instance.identityKey,
+                channelCA: PublicIdentityMaterial(
+                    algorithm: evidence.instance.channelCA.algorithm,
+                    fingerprint: evidence.instance.channelCA.fingerprint
+                )
+            )
+        )
+
+        #expect(ThaneIdentityPin(evidence: legacyEvidence).matches(evidence))
+        #expect(ThaneIdentityPin(evidence: evidence).matches(legacyEvidence))
     }
 
     @Test("Each stable identity field participates in matching")
@@ -112,7 +184,7 @@ struct IdentityPinningTests {
         #expect(IdentityContinuityState.evaluate(pin: pin, evidence: nil) == .unavailable)
         #expect(IdentityContinuityState.evaluate(pin: pin, evidence: mismatch) == .mismatch)
         #expect(IdentityContinuityState.matching.permitsPrivateDelivery)
-        #expect(IdentityContinuityState.stale.permitsPrivateDelivery)
+        #expect(!IdentityContinuityState.stale.permitsPrivateDelivery)
         #expect(!IdentityContinuityState.mismatch.permitsPrivateDelivery)
         #expect(!IdentityContinuityState.unavailable.permitsPrivateDelivery)
     }
@@ -121,7 +193,7 @@ struct IdentityPinningTests {
     func explicitForget() throws {
         let evidence = try IdentityTestFixture.evidence()
         let store = IdentityPinTestStore()
-        let service = IdentityPinningService(secureStore: store)
+        let service = IdentityPinningService(connectionID: connectionID, secureStore: store)
         try service.pin(evidence)
 
         #expect(throws: IdentityPinError.alreadyPinned) {
@@ -130,7 +202,7 @@ struct IdentityPinningTests {
 
         try service.forget()
         #expect(service.pin == nil)
-        #expect(store.deletedAccounts == ["thane-identity-pin"])
+        #expect(store.deletedAccounts.contains("thane-identity-pin.connection-one"))
     }
 
     @Test("An unreadable saved pin fails closed until explicitly forgotten")
@@ -139,7 +211,7 @@ struct IdentityPinningTests {
         let store = IdentityPinTestStore(
             values: ["thane-identity-pin": "not-json"]
         )
-        let service = IdentityPinningService(secureStore: store)
+        let service = IdentityPinningService(connectionID: connectionID, secureStore: store)
 
         #expect(service.pin == nil)
         #expect(service.lastError != nil)
@@ -170,6 +242,7 @@ private final class IdentityPinTestStore: CredentialStoring {
     private var values: [String: String]
     private(set) var savedAccounts: [String] = []
     private(set) var deletedAccounts: [String] = []
+    var failingLoadAccounts: Set<String> = []
 
     init(values: [String: String] = [:]) {
         self.values = values
@@ -180,12 +253,23 @@ private final class IdentityPinTestStore: CredentialStoring {
         savedAccounts.append(account)
     }
 
-    func load(account: String) -> String? {
-        values[account]
+    func load(account: String) throws -> String? {
+        if failingLoadAccounts.contains(account) {
+            throw IdentityPinTestStoreError.loadFailed
+        }
+        return values[account]
     }
 
     func delete(account: String) {
         values[account] = nil
         deletedAccounts.append(account)
     }
+
+    func value(account: String) -> String? {
+        values[account]
+    }
+}
+
+private enum IdentityPinTestStoreError: Error {
+    case loadFailed
 }

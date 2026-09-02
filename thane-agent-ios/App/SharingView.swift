@@ -1,10 +1,10 @@
 import CoreLocation
 import SwiftUI
 
-struct ContextView: View {
+struct SharingView: View {
     @Environment(AppState.self) private var appState
-    @State private var showingIdentity = false
-    @State private var showingPin = false
+
+    let counterparty: ThaneCounterparty
 
     var body: some View {
         ScrollView {
@@ -18,24 +18,14 @@ struct ContextView: View {
             .padding(.bottom, 32)
         }
         .background(Color(uiColor: .systemGroupedBackground))
-        .navigationTitle("Context")
-        .sheet(isPresented: $showingIdentity) {
-            if let evidence = appState.presentedIdentity {
-                IdentityEvidenceView(evidence: evidence)
-            }
-        }
-        .sheet(isPresented: $showingPin) {
-            if let pin = appState.identityPinning.pin {
-                IdentityPinView(pin: pin)
-            }
-        }
+        .navigationTitle("Sharing with \(counterparty.displayName)")
     }
 
     private var recipientCard: some View {
         AppCard(title: "Recipient") {
             if let evidence = appState.presentedIdentity {
-                Button {
-                    showingIdentity = true
+                NavigationLink {
+                    IdentityEvidenceView(evidence: evidence)
                 } label: {
                     HStack(spacing: 12) {
                         ThaneIdentityMark(identityID: evidence.instance.id, size: 40)
@@ -65,20 +55,31 @@ struct ContextView: View {
                     .font(.caption)
                     .foregroundStyle(appState.identityContinuity == .mismatch ? .red : .orange)
                 }
-            } else if let pin = appState.identityPinning.pin {
-                PinnedIdentitySummaryButton(
-                    pin: pin,
-                    status: appState.identityStatusLabel
-                ) {
-                    showingPin = true
+            } else if let pin = appState.identityPinning.pin,
+                      pin.identityID == counterparty.id {
+                NavigationLink {
+                    IdentityPinView(pin: pin)
+                } label: {
+                    HStack {
+                        PinnedIdentitySummary(
+                            pin: pin,
+                            status: appState.identityStatusLabel
+                        )
+                        Image(systemName: "chevron.right")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
                 }
-                Text("Current evidence is unavailable. Live requests and observation uploads remain disabled until the endpoint presents matching identity evidence.")
+                .buttonStyle(.plain)
+                .accessibilityHint("Shows the identity pinned on this iPhone")
+                Text(pinnedRecipientDetail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Label("No pinned recipient", systemImage: "lock.shield")
+                Label(counterparty.displayName, systemImage: "lock.shield")
                     .font(.headline)
-                Text("Enabled sources are not delivered until you review and pin identity evidence from the configured endpoint.")
+                Text("This sharing policy is unavailable until this counterparty is pinned on this iPhone.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -95,6 +96,7 @@ struct ContextView: View {
                 )) {
                     PreferenceLabel(title: category.title, detail: category.detail)
                 }
+                .disabled(!canEditSharing)
             }
         }
     }
@@ -110,6 +112,7 @@ struct ContextView: View {
                     detail: "Shares one Core Location fix per request, including accuracy and sensor provenance."
                 )
             }
+            .disabled(!canEditSharing)
 
             if appState.sharingPreferences.locationEnabled {
                 Divider()
@@ -158,10 +161,22 @@ struct ContextView: View {
         AppCard {
             Label("Controlled on this iPhone", systemImage: "hand.raised.fill")
                 .font(.headline)
-            Text("Every source defaults off. Thane cannot grant itself access or trigger an Apple permission prompt. Enabled data is sent only after current evidence matches this iPhone's identity pin, through the authenticated companion connection or an approved event-driven upload.")
+            Text("Every source defaults off for \(counterparty.displayName). \(counterparty.displayName) cannot grant itself access or trigger an Apple permission prompt. Enabled data is sent only after current evidence matches this iPhone's identity pin, through the authenticated companion connection or an approved event-driven upload.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private var canEditSharing: Bool {
+        appState.sharingPreferences.counterpartyID == counterparty.id
+            && appState.identityPinning.pin?.identityID == counterparty.id
+    }
+
+    private var pinnedRecipientDetail: String {
+        if appState.identityContinuity == .mismatch {
+            return "The configured endpoint presents a different identity. Delivery remains blocked while this sharing policy stays attached to \(counterparty.displayName)."
+        }
+        return "Current evidence is unavailable. Live requests and observation uploads remain disabled until the endpoint presents identity evidence matching \(counterparty.displayName)."
     }
 
     private func recipientTitle(for evidence: ThaneIdentityEvidence) -> String {
@@ -218,3 +233,12 @@ struct ContextView: View {
         return appState.locationService.isBackgroundMonitoringActive ? .green : .orange
     }
 }
+
+#if DEBUG
+#Preview("Sharing") {
+    NavigationStack {
+        SharingView(counterparty: PreviewFixtures.counterparty)
+    }
+    .environment(PreviewFixtures.appState())
+}
+#endif

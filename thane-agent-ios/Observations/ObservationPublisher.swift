@@ -19,8 +19,9 @@ final class ObservationPublisher {
     private var baseURL: URL?
     private var token: String?
     private var clientID = ""
-    private var identityID: String?
-    private var preparedIdentityID: String?
+    private var deliveryScope: ObservationDeliveryScope?
+    private var authorizationExpiresAt: Date?
+    private var preparedScope: ObservationDeliveryScope?
     private var uploadTask: Task<Void, Never>?
     private var uploadID: UUID?
     private var preparationTask: Task<Void, Never>?
@@ -39,23 +40,25 @@ final class ObservationPublisher {
         baseURL: URL?,
         token: String?,
         clientID: String,
-        identityID: String?
+        deliveryScope: ObservationDeliveryScope?,
+        authorizationExpiresAt: Date?
     ) {
         let trimmedToken = token?.trimmingCharacters(in: .whitespacesAndNewlines)
         let destinationChanged = self.baseURL != baseURL
             || self.token != trimmedToken
             || self.clientID != clientID
-            || self.identityID != identityID
+            || self.deliveryScope != deliveryScope
+            || self.authorizationExpiresAt != authorizationExpiresAt
         if destinationChanged {
             uploadTask?.cancel()
             uploadTask = nil
             uploadID = nil
             preparationTask?.cancel()
-            preparedIdentityID = nil
+            preparedScope = nil
             flushRequestedWhileBusy = false
             isUploading = false
         }
-        if self.identityID != identityID {
+        if self.deliveryScope != deliveryScope {
             for task in enqueueTasks.values {
                 task.cancel()
             }
@@ -63,14 +66,15 @@ final class ObservationPublisher {
         self.baseURL = baseURL
         self.token = trimmedToken
         self.clientID = clientID
-        self.identityID = identityID
+        self.deliveryScope = deliveryScope
+        self.authorizationExpiresAt = authorizationExpiresAt
 
         guard destinationChanged else {
             flush()
             return
         }
 
-        guard let identityID else {
+        guard let deliveryScope else {
             pendingCount = 0
             isUploading = false
             return
@@ -78,28 +82,29 @@ final class ObservationPublisher {
         preparationTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let discardedCount = try await outbox.bind(to: identityID)
+                let discardedCount = try await outbox.bind(to: deliveryScope)
                 try Task.checkCancellation()
-                guard self.identityID == identityID else { return }
-                preparedIdentityID = identityID
+                guard self.deliveryScope == deliveryScope else { return }
+                preparedScope = deliveryScope
                 if discardedCount > 0 {
                     logger.notice(
-                        "Discarded \(discardedCount, privacy: .public) legacy observations without an identity scope"
+                        "Discarded \(discardedCount, privacy: .public) legacy observations without a recipient scope"
                     )
                 }
                 lastError = nil
-                await refreshPendingCount(for: identityID)
+                await refreshPendingCount(for: deliveryScope)
                 flush()
             } catch is CancellationError {
                 return
             } catch {
-                guard self.identityID == identityID else { return }
+                guard self.deliveryScope == deliveryScope else { return }
                 record(error)
             }
         }
     }
 
     func publishLocation(_ snapshot: LocationSnapshot) {
+        guard authorizePrivatePublish() else { return }
         guard let observedAt = ObservationCoding.date(from: snapshot.locationTimestamp) else {
             lastError = "A Core Location timestamp could not be encoded."
             return
@@ -114,6 +119,7 @@ final class ObservationPublisher {
     }
 
     func publishSystemContext(_ snapshot: SystemContextSnapshot) {
+        guard authorizePrivatePublish() else { return }
         guard let observedAt = ObservationCoding.date(from: snapshot.capturedAt) else {
             lastError = "A system-context timestamp could not be encoded."
             return
@@ -132,10 +138,12 @@ final class ObservationPublisher {
     }
 
     func flush() {
+        guard authorizePrivatePublish() else { return }
         guard let baseURL,
               let token,
-              let identityID,
-              preparedIdentityID == identityID,
+              let deliveryScope,
+              let authorizationExpiresAt,
+              preparedScope == deliveryScope,
               !token.isEmpty,
               !clientID.isEmpty else {
             return
@@ -155,7 +163,8 @@ final class ObservationPublisher {
                 baseURL: baseURL,
                 token: token,
                 clientID: clientID,
-                identityID: identityID,
+                deliveryScope: deliveryScope,
+                authorizationExpiresAt: authorizationExpiresAt,
                 uploadID: uploadID
             )
         }
@@ -176,8 +185,9 @@ final class ObservationPublisher {
         baseURL = nil
         token = nil
         clientID = ""
-        identityID = nil
-        preparedIdentityID = nil
+        deliveryScope = nil
+        authorizationExpiresAt = nil
+        preparedScope = nil
         uploadTask = nil
         uploadID = nil
         preparationTask = nil
@@ -196,7 +206,7 @@ final class ObservationPublisher {
     }
 
     private func enqueue(_ makeEvent: @escaping @MainActor () throws -> ObservationEvent) {
-        guard let identityID else { return }
+        guard let deliveryScope else { return }
         let taskID = UUID()
         let task = Task { [weak self] in
             guard let self else { return }
@@ -205,17 +215,17 @@ final class ObservationPublisher {
                 try Task.checkCancellation()
                 let event = try makeEvent()
                 try Task.checkCancellation()
-                try await outbox.enqueue(event, for: identityID)
+                try await outbox.enqueue(event, for: deliveryScope)
                 try Task.checkCancellation()
-                guard self.identityID == identityID else { return }
-                preparedIdentityID = identityID
+                guard self.deliveryScope == deliveryScope else { return }
+                preparedScope = deliveryScope
                 lastError = nil
-                await refreshPendingCount(for: identityID)
+                await refreshPendingCount(for: deliveryScope)
                 flush()
             } catch is CancellationError {
                 return
             } catch {
-                if self.identityID == identityID {
+                if self.deliveryScope == deliveryScope {
                     record(error)
                 }
             }
@@ -227,9 +237,17 @@ final class ObservationPublisher {
         baseURL: URL,
         token: String,
         clientID: String,
-        identityID: String,
+        deliveryScope: ObservationDeliveryScope,
+        authorizationExpiresAt: Date,
         uploadID: UUID
     ) async {
+        guard authorizationExpiresAt > Date(),
+              self.authorizationExpiresAt == authorizationExpiresAt else {
+            if self.authorizationExpiresAt == authorizationExpiresAt {
+                suspendExpiredPrivateDelivery()
+            }
+            return
+        }
         var completedBatch = false
         let backgroundTask = UIApplication.shared.beginBackgroundTask(
             withName: "Publish companion observations"
@@ -245,8 +263,15 @@ final class ObservationPublisher {
         }
 
         do {
-            let events = try await outbox.pending(for: identityID)
+            let events = try await outbox.pending(for: deliveryScope)
             if !events.isEmpty {
+                guard authorizationExpiresAt > Date(),
+                      self.authorizationExpiresAt == authorizationExpiresAt else {
+                    if self.authorizationExpiresAt == authorizationExpiresAt {
+                        suspendExpiredPrivateDelivery()
+                    }
+                    return
+                }
                 let batch = ObservationBatch(
                     clientID: clientID,
                     clientName: "Thane for iOS",
@@ -257,9 +282,9 @@ final class ObservationPublisher {
                 )
                 _ = try await uploader.upload(batch, to: baseURL, token: token)
                 try Task.checkCancellation()
-                try await outbox.removeSent(Set(batch.events.map(\.eventID)), for: identityID)
+                try await outbox.removeSent(Set(batch.events.map(\.eventID)), for: deliveryScope)
                 completedBatch = true
-                if self.identityID == identityID {
+                if self.deliveryScope == deliveryScope {
                     lastPublishedAt = Date()
                     lastError = nil
                 }
@@ -269,14 +294,14 @@ final class ObservationPublisher {
             logger.notice("Observation upload ended when background time expired")
         } catch {
             if self.uploadID == uploadID,
-               self.identityID == identityID {
+               self.deliveryScope == deliveryScope {
                 record(error)
             }
         }
 
         guard self.uploadID == uploadID else { return }
-        if self.identityID == identityID {
-            await refreshPendingCount(for: identityID)
+        if self.deliveryScope == deliveryScope {
+            await refreshPendingCount(for: deliveryScope)
         }
         let shouldFlushAgain = flushRequestedWhileBusy || completedBatch
         flushRequestedWhileBusy = false
@@ -287,7 +312,7 @@ final class ObservationPublisher {
            pendingCount > 0,
            self.baseURL != nil,
            self.token?.isEmpty == false,
-           self.identityID == identityID {
+           self.deliveryScope == deliveryScope {
             // A registration or newer coalesced value requested one more attempt
             // while this batch was in flight. A failure without such a request
             // still stops here rather than creating a retry loop.
@@ -295,13 +320,13 @@ final class ObservationPublisher {
         }
     }
 
-    private func refreshPendingCount(for identityID: String) async {
+    private func refreshPendingCount(for deliveryScope: ObservationDeliveryScope) async {
         do {
-            let count = try await outbox.pending(for: identityID).count
-            guard self.identityID == identityID else { return }
+            let count = try await outbox.pending(for: deliveryScope).count
+            guard self.deliveryScope == deliveryScope else { return }
             pendingCount = count
         } catch {
-            if self.identityID == identityID {
+            if self.deliveryScope == deliveryScope {
                 record(error)
             }
         }
@@ -310,6 +335,31 @@ final class ObservationPublisher {
     private func cancelUpload(id: UUID) {
         guard uploadID == id else { return }
         uploadTask?.cancel()
+    }
+
+    private func authorizePrivatePublish() -> Bool {
+        guard let authorizationExpiresAt else { return false }
+        guard authorizationExpiresAt > Date() else {
+            suspendExpiredPrivateDelivery()
+            return false
+        }
+        return baseURL != nil
+            && token?.isEmpty == false
+            && !clientID.isEmpty
+            && deliveryScope != nil
+    }
+
+    private func suspendExpiredPrivateDelivery() {
+        logger.notice("Suspended observation delivery because identity evidence expired")
+        uploadTask?.cancel()
+        uploadTask = nil
+        uploadID = nil
+        flushRequestedWhileBusy = false
+        isUploading = false
+        baseURL = nil
+        token = nil
+        clientID = ""
+        authorizationExpiresAt = nil
     }
 
     private func record(_ error: Error) {

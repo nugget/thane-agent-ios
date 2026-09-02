@@ -20,6 +20,92 @@ struct ServerConnectionTests {
         #expect(callbackCount == 1)
     }
 
+    @Test("Certificate chain observed before establishment is published on connection")
+    func certificateChainObservedBeforeEstablishment() {
+        let connection = ServerConnection()
+        let chain = Self.certificateChain()
+
+        connection.recordTransportCertificateChain(chain)
+        #expect(connection.transportCertificateChain.isEmpty)
+
+        connection.handleConnectionEstablished()
+
+        #expect(connection.transportCertificateChain == chain)
+        #expect(connection.transportCertificateCapturedAt != nil)
+    }
+
+    @Test("Certificate chain observed after establishment is published immediately")
+    func certificateChainObservedAfterEstablishment() {
+        let connection = ServerConnection()
+        let chain = Self.certificateChain()
+
+        connection.handleConnectionEstablished()
+        connection.recordTransportCertificateChain(chain)
+
+        #expect(connection.transportCertificateChain == chain)
+        #expect(connection.transportCertificateCapturedAt != nil)
+    }
+
+    @Test("Disconnect retains the last authenticated certificate evidence")
+    func disconnectRetainsCertificateEvidence() {
+        let connection = ServerConnection()
+        let chain = Self.certificateChain()
+        connection.recordTransportCertificateChain(chain)
+        connection.handleConnectionEstablished()
+        let capturedAt = connection.transportCertificateCapturedAt
+
+        connection.disconnect()
+
+        #expect(connection.transportCertificateChain == chain)
+        #expect(connection.transportCertificateCapturedAt == capturedAt)
+    }
+
+    @Test("Refreshing identity for a different endpoint clears retained transport evidence")
+    func endpointChangeClearsCertificateEvidence() throws {
+        let firstEndpoint = try #require(URL(string: "https://first.example"))
+        let secondEndpoint = try #require(URL(string: "https://second.example"))
+        let connection = ServerConnection()
+        let chain = Self.certificateChain()
+        connection.handleConnectionEstablished()
+        connection.recordTransportCertificateChain(chain, endpoint: firstEndpoint)
+
+        connection.prepareForIdentityRefresh(from: firstEndpoint)
+        #expect(connection.transportCertificateChain == chain)
+
+        connection.prepareForIdentityRefresh(from: secondEndpoint)
+        #expect(connection.transportCertificateChain.isEmpty)
+        #expect(connection.transportCertificateCapturedAt == nil)
+        #expect(connection.transportCertificateEndpoint == nil)
+    }
+
+    @Test("Disconnect retains the last connection error until success")
+    func disconnectRetainsConnectionError() {
+        let connection = ServerConnection()
+        connection.handleAuthenticationFailure("Invalid token")
+
+        connection.disconnect()
+
+        #expect(connection.lastError == "Authentication failed: Invalid token")
+
+        connection.handleConnectionEstablished()
+        #expect(connection.lastError == nil)
+    }
+
+    @Test("Explicit diagnostic reset clears retained evidence and errors")
+    func explicitDiagnosticReset() {
+        let connection = ServerConnection()
+        connection.recordTransportCertificateChain(Self.certificateChain())
+        connection.handleConnectionEstablished()
+        connection.handleAuthenticationFailure("Invalid token")
+
+        connection.clearRetainedDiagnostics()
+
+        #expect(connection.transportCertificateChain.isEmpty)
+        #expect(connection.transportCertificateCapturedAt == nil)
+        #expect(connection.transportCertificateEndpoint == nil)
+        #expect(connection.lastError == nil)
+    }
+
     @Test("Authentication failure stops reconnecting and reports the error")
     func authenticationFailureIsTerminal() {
         let connection = ServerConnection()
@@ -49,6 +135,7 @@ struct ServerConnectionTests {
             connectionSettings: settings,
             sharingPreferences: SharingPreferences(defaults: defaults),
             identityPinning: IdentityPinningService(
+                connectionID: settings.connectionID,
                 secureStore: AuthenticationCredentialStore()
             )
         )
@@ -58,6 +145,20 @@ struct ServerConnectionTests {
         #expect(settings.isEnabled == false)
         #expect(appState.connection.state == .disconnected)
         #expect(appState.displayedError == "Authentication failed: Expired token")
+    }
+
+    private static func certificateChain() -> [TransportCertificate] {
+        [
+            TransportCertificate(
+                position: 0,
+                subject: "thane.example",
+                issuer: "Test CA",
+                sha256Fingerprint: "SHA256:test",
+                serialNumber: "01",
+                notValidBefore: nil,
+                notValidAfter: nil
+            ),
+        ]
     }
 }
 

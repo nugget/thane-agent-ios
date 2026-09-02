@@ -1,16 +1,15 @@
 import SwiftUI
 
-struct ThaneHomeView: View {
+struct CounterpartyDetailView: View {
     @Environment(AppState.self) private var appState
-    @State private var showingIdentity = false
-    @State private var showingPin = false
 
-    let openSettings: () -> Void
+    let counterparty: ThaneCounterparty
 
     var body: some View {
         ScrollView {
             VStack(spacing: 22) {
                 identityCard
+                sharingCard
                 availabilityCard
                 activityCard
                 errorCard
@@ -19,29 +18,23 @@ struct ThaneHomeView: View {
             .padding(.bottom, 32)
         }
         .background(Color(uiColor: .systemGroupedBackground))
-        .navigationTitle("Thane")
-        .sheet(isPresented: $showingIdentity) {
-            if let evidence = appState.presentedIdentity {
-                IdentityEvidenceView(evidence: evidence)
-            }
-        }
-        .sheet(isPresented: $showingPin) {
-            if let pin = appState.identityPinning.pin {
-                IdentityPinView(pin: pin)
-            }
-        }
+        .navigationTitle(counterparty.displayName)
     }
 
     @ViewBuilder
     private var identityCard: some View {
-        AppCard(title: "This Thane") {
+        AppCard(title: "Identity") {
             if let evidence = appState.presentedIdentity {
-                IdentitySummaryButton(
-                    evidence: evidence,
-                    status: appState.identityStatusLabel
-                ) {
-                    showingIdentity = true
+                NavigationLink {
+                    IdentityEvidenceView(evidence: evidence)
+                } label: {
+                    IdentitySummary(
+                        evidence: evidence,
+                        status: appState.identityStatusLabel
+                    )
                 }
+                .buttonStyle(.plain)
+                .accessibilityHint("Shows cryptographic identity and core evidence")
 
                 switch appState.identityContinuity {
                 case .presented:
@@ -50,7 +43,11 @@ struct ThaneHomeView: View {
                     Text("Private requests and observation uploads remain off until you pin this identity on this iPhone.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Button("Review & Pin") { showingIdentity = true }
+                    NavigationLink {
+                        IdentityEvidenceView(evidence: evidence)
+                    } label: {
+                        Text("Review & Pin")
+                    }
                         .buttonStyle(.borderedProminent)
                 case .mismatch:
                     Label("Private delivery blocked", systemImage: "exclamationmark.shield.fill")
@@ -79,13 +76,24 @@ struct ThaneHomeView: View {
                 case .notPinned, .unavailable:
                     EmptyView()
                 }
-            } else if let pin = appState.identityPinning.pin {
-                PinnedIdentitySummaryButton(
-                    pin: pin,
-                    status: appState.identityStatusLabel
-                ) {
-                    showingPin = true
+            } else if let pin = appState.identityPinning.pin,
+                      pin.identityID == counterparty.id {
+                NavigationLink {
+                    IdentityPinView(pin: pin)
+                } label: {
+                    HStack {
+                        PinnedIdentitySummary(
+                            pin: pin,
+                            status: appState.identityStatusLabel
+                        )
+                        Image(systemName: "chevron.right")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityHint("Shows the identity pinned on this iPhone")
 
                 if appState.identityService.isRefreshing {
                     HStack(spacing: 12) {
@@ -94,12 +102,21 @@ struct ThaneHomeView: View {
                             .font(.headline)
                     }
                 } else {
-                    Label("Current identity evidence is unavailable", systemImage: "questionmark.diamond")
-                        .font(.headline)
-                        .foregroundStyle(.orange)
-                    Text("Private requests and observation uploads remain disabled until the configured endpoint presents identity evidence that matches this pin.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if appState.identityContinuity == .mismatch {
+                        Label("Configured endpoint presents a different identity", systemImage: "exclamationmark.shield.fill")
+                            .font(.headline)
+                            .foregroundStyle(.red)
+                        Text("Private delivery remains attached to \(counterparty.displayName) and is blocked until the endpoint presents matching evidence.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Label("Current identity evidence is unavailable", systemImage: "questionmark.diamond")
+                            .font(.headline)
+                            .foregroundStyle(.orange)
+                        Text("Private requests and observation uploads remain disabled until the configured endpoint presents identity evidence that matches this pin.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Button("Refresh Identity") { appState.refreshIdentity() }
                         .buttonStyle(.bordered)
                 }
@@ -118,7 +135,7 @@ struct ThaneHomeView: View {
                 Label("Identity evidence is not available yet", systemImage: "person.badge.shield.checkmark")
                     .font(.headline)
 
-                Text("This does not interrupt live requests or background observation delivery. Refresh to ask the configured Thane for its current core evidence.")
+                Text("This does not interrupt live requests or background observation delivery. Refresh to ask \(counterparty.displayName) for current core evidence.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -127,14 +144,39 @@ struct ThaneHomeView: View {
                 }
                 .buttonStyle(.bordered)
             } else {
-                Label("Connect your Thane", systemImage: "link.badge.plus")
+                Label("Connection unavailable", systemImage: "link.badge.plus")
                     .font(.headline)
-                Text("Add the server and API token once. Routine status and sharing controls then stay separate from credentials.")
+                Text("Manage this connection from Settings.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Button("Open Settings", action: openSettings)
-                    .buttonStyle(.borderedProminent)
             }
+        }
+    }
+
+    private var sharingCard: some View {
+        AppCard(title: "Sharing") {
+            NavigationLink {
+                SharingView(counterparty: counterparty)
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "hand.raised.fill")
+                        .font(.title2)
+                        .foregroundStyle(.blue)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Shared Information")
+                            .font(.headline)
+                        Text(sharingSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -190,8 +232,6 @@ struct ThaneHomeView: View {
             AppCard {
                 Label(connectionError, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
-                Button("Review Connection", action: openSettings)
-                    .buttonStyle(.bordered)
             }
         } else if let publishError = appState.observationPublisher.lastError {
             AppCard {
@@ -247,4 +287,22 @@ struct ThaneHomeView: View {
         let count = appState.observationPublisher.pendingCount
         return count == 0 ? "None" : "\(count) update kind\(count == 1 ? "" : "s")"
     }
+
+    private var sharingSummary: String {
+        guard appState.sharingPreferences.counterpartyID == counterparty.id else {
+            return "Unavailable until this identity is pinned"
+        }
+        let systemCount = appState.sharingPreferences.enabledSystemCategories.count
+        let count = systemCount + (appState.sharingPreferences.locationEnabled ? 1 : 0)
+        return count == 0 ? "Nothing enabled" : "\(count) source\(count == 1 ? "" : "s") enabled"
+    }
 }
+
+#if DEBUG
+#Preview("Agent Detail") {
+    NavigationStack {
+        CounterpartyDetailView(counterparty: PreviewFixtures.counterparty)
+    }
+    .environment(PreviewFixtures.appState())
+}
+#endif

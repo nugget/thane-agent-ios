@@ -11,11 +11,15 @@ struct ObservationPublisherTests {
         defer { fixture.cleanup() }
         let outbox = ObservationOutbox(fileURL: fixture.fileURL)
         let identityID = "thane:ed25519:SHA256:primary"
+        let deliveryScope = ObservationDeliveryScope(
+            connectionID: "connection-primary",
+            identityID: identityID
+        )
         try await outbox.enqueue(try ObservationEvent.available(
             kind: .systemContext,
             observedAt: Date(),
             payload: PublisherTestPayload(value: 1)
-        ), for: identityID)
+        ), for: deliveryScope)
         let uploader = SequencedObservationUploader()
         let publisher = ObservationPublisher(outbox: outbox, uploader: uploader)
         let baseURL = try #require(URL(string: "https://thane.example"))
@@ -24,7 +28,8 @@ struct ObservationPublisherTests {
             baseURL: baseURL,
             token: "token",
             clientID: "client-id",
-            identityID: identityID
+            deliveryScope: deliveryScope,
+            authorizationExpiresAt: .distantFuture
         )
         try await waitUntil { uploader.callCount == 1 }
 
@@ -33,7 +38,7 @@ struct ObservationPublisherTests {
 
         try await waitUntil { uploader.callCount == 2 }
         try await waitUntil { publisher.pendingCount == 0 && !publisher.isUploading }
-        #expect(try await outbox.pending(for: identityID).isEmpty)
+        #expect(try await outbox.pending(for: deliveryScope).isEmpty)
         #expect(uploader.callCount == 2)
     }
 
@@ -43,11 +48,15 @@ struct ObservationPublisherTests {
         defer { fixture.cleanup() }
         let outbox = ObservationOutbox(fileURL: fixture.fileURL)
         let identityID = "thane:ed25519:SHA256:primary"
+        let deliveryScope = ObservationDeliveryScope(
+            connectionID: "connection-primary",
+            identityID: identityID
+        )
         try await outbox.enqueue(try ObservationEvent.available(
             kind: .location,
             observedAt: Date(),
             payload: PublisherTestPayload(value: 1)
-        ), for: identityID)
+        ), for: deliveryScope)
         let uploader = SequencedObservationUploader()
         let publisher = ObservationPublisher(outbox: outbox, uploader: uploader)
         let firstURL = try #require(URL(string: "https://first.example"))
@@ -57,16 +66,24 @@ struct ObservationPublisherTests {
             baseURL: firstURL,
             token: "first-token",
             clientID: "client-id",
-            identityID: identityID
+            deliveryScope: deliveryScope,
+            authorizationExpiresAt: .distantFuture
         )
         try await waitUntil { uploader.callCount == 1 }
 
-        publisher.configure(baseURL: nil, token: nil, clientID: "", identityID: nil)
+        publisher.configure(
+            baseURL: nil,
+            token: nil,
+            clientID: "",
+            deliveryScope: nil,
+            authorizationExpiresAt: nil
+        )
         publisher.configure(
             baseURL: secondURL,
             token: "second-token",
             clientID: "client-id",
-            identityID: identityID
+            deliveryScope: deliveryScope,
+            authorizationExpiresAt: .distantFuture
         )
 
         try await waitUntil { uploader.callCount == 2 }
@@ -75,7 +92,7 @@ struct ObservationPublisherTests {
         try await Task.sleep(for: .milliseconds(10))
 
         #expect(uploader.requestedBaseURLs == [firstURL, secondURL])
-        #expect(try await outbox.pending(for: identityID).isEmpty)
+        #expect(try await outbox.pending(for: deliveryScope).isEmpty)
         #expect(publisher.lastError == nil)
     }
 
@@ -85,6 +102,10 @@ struct ObservationPublisherTests {
         defer { fixture.cleanup() }
         let outbox = ObservationOutbox(fileURL: fixture.fileURL)
         let identityID = "thane:ed25519:SHA256:primary"
+        let deliveryScope = ObservationDeliveryScope(
+            connectionID: "connection-primary",
+            identityID: identityID
+        )
         let uploader = SequencedObservationUploader()
         let publisher = ObservationPublisher(outbox: outbox, uploader: uploader)
 
@@ -92,16 +113,46 @@ struct ObservationPublisherTests {
             baseURL: nil,
             token: nil,
             clientID: "",
-            identityID: identityID
+            deliveryScope: deliveryScope,
+            authorizationExpiresAt: nil
         )
         publisher.withdraw(.location)
 
         try await waitUntil { publisher.pendingCount == 1 }
-        let pending = try await outbox.pending(for: identityID)
+        let pending = try await outbox.pending(for: deliveryScope)
         #expect(pending.count == 1)
         #expect(pending.first?.kind == .location)
         #expect(pending.first?.status == .withdrawn)
         #expect(uploader.callCount == 0)
+    }
+
+    @Test("Expired identity authorization blocks event-driven private observations")
+    func expiredAuthorizationBlocksPrivateObservations() async throws {
+        let fixture = try PublisherFixture()
+        defer { fixture.cleanup() }
+        let uploader = SequencedObservationUploader()
+        let publisher = ObservationPublisher(
+            outbox: ObservationOutbox(fileURL: fixture.fileURL),
+            uploader: uploader
+        )
+        let deliveryScope = ObservationDeliveryScope(
+            connectionID: "connection-primary",
+            identityID: "thane:ed25519:SHA256:primary"
+        )
+        let baseURL = try #require(URL(string: "https://thane.example"))
+
+        publisher.configure(
+            baseURL: baseURL,
+            token: "token",
+            clientID: "client-id",
+            deliveryScope: deliveryScope,
+            authorizationExpiresAt: .distantPast
+        )
+        publisher.publishLocation(Self.locationSnapshot())
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(uploader.callCount == 0)
+        #expect(publisher.pendingCount == 0)
     }
 
     @Test("Forgetting drains pending mutations before deleting the queue")
@@ -110,6 +161,10 @@ struct ObservationPublisherTests {
         defer { fixture.cleanup() }
         let outbox = ObservationOutbox(fileURL: fixture.fileURL)
         let identityID = "thane:ed25519:SHA256:primary"
+        let deliveryScope = ObservationDeliveryScope(
+            connectionID: "connection-primary",
+            identityID: identityID
+        )
         let publisher = ObservationPublisher(
             outbox: outbox,
             uploader: SequencedObservationUploader()
@@ -119,7 +174,8 @@ struct ObservationPublisherTests {
             baseURL: nil,
             token: nil,
             clientID: "",
-            identityID: identityID
+            deliveryScope: deliveryScope,
+            authorizationExpiresAt: nil
         )
         publisher.withdraw(.location)
         publisher.withdraw(.systemContext)
@@ -129,7 +185,7 @@ struct ObservationPublisherTests {
 
         #expect(!FileManager.default.fileExists(atPath: fixture.fileURL.path))
         await #expect(throws: ObservationOutboxError.self) {
-            _ = try await outbox.pending(for: identityID)
+            _ = try await outbox.pending(for: deliveryScope)
         }
         #expect(publisher.pendingCount == 0)
     }
@@ -142,6 +198,28 @@ struct ObservationPublisherTests {
             try await Task.sleep(for: .milliseconds(10))
         }
         Issue.record("Timed out waiting for asynchronous publisher state")
+    }
+
+    private static func locationSnapshot() -> LocationSnapshot {
+        LocationSnapshot(
+            capturedAt: "2026-09-01T12:00:00Z",
+            locationTimestamp: "2026-09-01T12:00:00Z",
+            latitude: 41.88,
+            longitude: -87.63,
+            altitudeMeters: nil,
+            ellipsoidalAltitudeMeters: nil,
+            horizontalAccuracyMeters: 5,
+            verticalAccuracyMeters: nil,
+            speedMetersPerSecond: nil,
+            speedAccuracyMetersPerSecond: nil,
+            courseDegrees: nil,
+            courseAccuracyDegrees: nil,
+            floor: nil,
+            authorization: "always",
+            accuracyAuthorization: "full",
+            simulatedBySoftware: false,
+            producedByAccessory: false
+        )
     }
 }
 
