@@ -1,8 +1,7 @@
 import SwiftUI
 
 struct CounterpartyDetailView: View {
-    @Environment(AppState.self) private var appState
-
+    let profile: AgentProfile
     let counterparty: ThaneCounterparty
 
     var body: some View {
@@ -24,19 +23,19 @@ struct CounterpartyDetailView: View {
     @ViewBuilder
     private var identityCard: some View {
         AppCard(title: "Identity") {
-            if let evidence = appState.presentedIdentity {
+            if let evidence = profile.presentedIdentity {
                 NavigationLink {
-                    IdentityEvidenceView(evidence: evidence)
+                    IdentityEvidenceView(profile: profile, evidence: evidence)
                 } label: {
                     IdentitySummary(
                         evidence: evidence,
-                        status: appState.identityStatusLabel
+                        status: profile.identityStatusLabel
                     )
                 }
                 .buttonStyle(.plain)
                 .accessibilityHint("Shows cryptographic identity and core evidence")
 
-                switch appState.identityContinuity {
+                switch profile.identityContinuity {
                 case .presented:
                     Label("Review the evidence before pinning", systemImage: "pin.circle")
                         .font(.headline)
@@ -44,7 +43,7 @@ struct CounterpartyDetailView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     NavigationLink {
-                        IdentityEvidenceView(evidence: evidence)
+                        IdentityEvidenceView(profile: profile, evidence: evidence)
                     } label: {
                         Text("Review & Pin")
                     }
@@ -60,23 +59,23 @@ struct CounterpartyDetailView: View {
                     Label("Identity matches; evidence is stale", systemImage: "clock.badge.exclamationmark")
                         .font(.headline)
                         .foregroundStyle(.orange)
-                    Button("Refresh Evidence") { appState.refreshIdentity() }
+                    Button("Refresh Evidence") { profile.refreshIdentity() }
                         .buttonStyle(.bordered)
                 case .matching:
                     Label(
-                        appState.hasVerifiedReportedCoreChecks
+                        profile.hasVerifiedReportedCoreChecks
                             ? "Core checks reported verified"
                             : "Core evidence includes warnings",
-                        systemImage: appState.hasVerifiedReportedCoreChecks
+                        systemImage: profile.hasVerifiedReportedCoreChecks
                             ? "checkmark.seal.fill"
                             : "exclamationmark.triangle.fill"
                     )
                     .font(.caption)
-                    .foregroundStyle(appState.hasVerifiedReportedCoreChecks ? .green : .orange)
+                    .foregroundStyle(profile.hasVerifiedReportedCoreChecks ? .green : .orange)
                 case .notPinned, .unavailable:
                     EmptyView()
                 }
-            } else if let pin = appState.identityPinning.pin,
+            } else if let pin = profile.identityPinning.pin,
                       pin.identityID == counterparty.id {
                 NavigationLink {
                     IdentityPinView(pin: pin)
@@ -84,7 +83,7 @@ struct CounterpartyDetailView: View {
                     HStack {
                         PinnedIdentitySummary(
                             pin: pin,
-                            status: appState.identityStatusLabel
+                            status: profile.identityStatusLabel
                         )
                         Image(systemName: "chevron.right")
                             .font(.footnote.weight(.semibold))
@@ -95,14 +94,14 @@ struct CounterpartyDetailView: View {
                 .buttonStyle(.plain)
                 .accessibilityHint("Shows the identity pinned on this iPhone")
 
-                if appState.identityService.isRefreshing {
+                if profile.identityService.isRefreshing {
                     HStack(spacing: 12) {
                         ProgressView()
                         Text("Reading current identity evidence")
                             .font(.headline)
                     }
                 } else {
-                    if appState.identityContinuity == .mismatch {
+                    if profile.identityContinuity == .mismatch {
                         Label("Configured endpoint presents a different identity", systemImage: "exclamationmark.shield.fill")
                             .font(.headline)
                             .foregroundStyle(.red)
@@ -117,10 +116,10 @@ struct CounterpartyDetailView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    Button("Refresh Identity") { appState.refreshIdentity() }
+                    Button("Refresh Identity") { profile.refreshIdentity() }
                         .buttonStyle(.bordered)
                 }
-            } else if appState.identityService.isRefreshing {
+            } else if profile.identityService.isRefreshing {
                 HStack(spacing: 12) {
                     ProgressView()
                     VStack(alignment: .leading, spacing: 3) {
@@ -131,7 +130,7 @@ struct CounterpartyDetailView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-            } else if appState.hasConnectionCredentials {
+            } else if profile.hasConnectionCredentials {
                 Label("Identity evidence is not available yet", systemImage: "person.badge.shield.checkmark")
                     .font(.headline)
 
@@ -140,7 +139,7 @@ struct CounterpartyDetailView: View {
                     .foregroundStyle(.secondary)
 
                 Button("Refresh Identity") {
-                    appState.refreshIdentity()
+                    profile.refreshIdentity()
                 }
                 .buttonStyle(.bordered)
             } else {
@@ -156,7 +155,7 @@ struct CounterpartyDetailView: View {
     private var sharingCard: some View {
         AppCard(title: "Sharing") {
             NavigationLink {
-                SharingView(counterparty: counterparty)
+                SharingView(profile: profile, counterparty: counterparty)
             } label: {
                 HStack(spacing: 12) {
                     Image(systemName: "hand.raised.fill")
@@ -184,8 +183,8 @@ struct CounterpartyDetailView: View {
         AppCard(title: "Availability") {
             OperationalRow(
                 title: "Live requests",
-                value: appState.statusTitle,
-                systemImage: appState.statusSymbol,
+                value: profile.statusTitle,
+                systemImage: profile.statusSymbol,
                 color: connectionColor
             )
 
@@ -209,7 +208,7 @@ struct CounterpartyDetailView: View {
             OperationalRow(
                 title: "Waiting",
                 value: pendingDeliveryLabel,
-                systemImage: appState.observationPublisher.pendingCount > 0 ? "tray.full" : "tray"
+                systemImage: profile.observationPublisher.pendingCount > 0 ? "tray.full" : "tray"
             )
 
             Divider()
@@ -224,16 +223,16 @@ struct CounterpartyDetailView: View {
 
     @ViewBuilder
     private var errorCard: some View {
-        let identityError = appState.identityService.sourceURL == appState.connectionSettings.serverURL
-            ? appState.identityService.lastError
+        let identityError = profile.identityService.sourceURL == profile.connectionSettings.serverURL
+            ? profile.identityService.lastError
             : nil
 
-        if let connectionError = appState.displayedError {
+        if let connectionError = profile.displayedError {
             AppCard {
                 Label(connectionError, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
             }
-        } else if let publishError = appState.observationPublisher.lastError {
+        } else if let publishError = profile.observationPublisher.lastError {
             AppCard {
                 Label(publishError, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
@@ -246,7 +245,7 @@ struct CounterpartyDetailView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Button("Try Again") {
-                    appState.refreshIdentity()
+                    profile.refreshIdentity()
                 }
                 .buttonStyle(.bordered)
             }
@@ -254,7 +253,7 @@ struct CounterpartyDetailView: View {
     }
 
     private var connectionColor: Color {
-        switch appState.connection.state {
+        switch profile.connection.state {
         case .connected: .green
         case .connecting, .authenticating, .reconnecting: .orange
         case .disconnected: .secondary
@@ -262,47 +261,50 @@ struct CounterpartyDetailView: View {
     }
 
     private var backgroundAvailability: String {
-        guard appState.sharingPreferences.backgroundLocationEnabled else {
+        guard profile.sharingPreferences.backgroundLocationEnabled else {
             return "Not enabled"
         }
-        guard appState.locationService.isSignificantLocationChangeMonitoringAvailable else {
+        guard profile.locationService.isSignificantLocationChangeMonitoringAvailable else {
             return "Unavailable on this device"
         }
-        return appState.locationService.isBackgroundMonitoringActive
+        return profile.locationService.isBackgroundMonitoringActive
             ? "Significant changes enabled"
             : "Needs Always permission"
     }
 
     private var backgroundAvailabilityColor: Color {
-        guard appState.sharingPreferences.backgroundLocationEnabled else { return .secondary }
-        return appState.locationService.isBackgroundMonitoringActive ? .green : .orange
+        guard profile.sharingPreferences.backgroundLocationEnabled else { return .secondary }
+        return profile.locationService.isBackgroundMonitoringActive ? .green : .orange
     }
 
     private var lastPublishedLabel: String {
-        guard let date = appState.observationPublisher.lastPublishedAt else { return "No publish this run" }
+        guard let date = profile.observationPublisher.lastPublishedAt else { return "No publish this run" }
         return date.formatted(.relative(presentation: .named))
     }
 
     private var pendingDeliveryLabel: String {
-        let count = appState.observationPublisher.pendingCount
+        let count = profile.observationPublisher.pendingCount
         return count == 0 ? "None" : "\(count) update kind\(count == 1 ? "" : "s")"
     }
 
     private var sharingSummary: String {
-        guard appState.sharingPreferences.counterpartyID == counterparty.id else {
+        guard profile.sharingPreferences.counterpartyID == counterparty.id else {
             return "Unavailable until this identity is pinned"
         }
-        let systemCount = appState.sharingPreferences.enabledSystemCategories.count
-        let count = systemCount + (appState.sharingPreferences.locationEnabled ? 1 : 0)
+        let systemCount = profile.sharingPreferences.enabledSystemCategories.count
+        let count = systemCount + (profile.sharingPreferences.locationEnabled ? 1 : 0)
         return count == 0 ? "Nothing enabled" : "\(count) source\(count == 1 ? "" : "s") enabled"
     }
 }
 
 #if DEBUG
 #Preview("Agent Detail") {
+    let profile = PreviewFixtures.appState().activeProfile
     NavigationStack {
-        CounterpartyDetailView(counterparty: PreviewFixtures.counterparty)
+        CounterpartyDetailView(
+            profile: profile,
+            counterparty: PreviewFixtures.counterparty
+        )
     }
-    .environment(PreviewFixtures.appState())
 }
 #endif

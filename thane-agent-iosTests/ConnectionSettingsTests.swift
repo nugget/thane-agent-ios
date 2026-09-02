@@ -129,7 +129,7 @@ struct ConnectionSettingsTests {
         )
         settings.isEnabled = true
         let preferences = SharingPreferences(defaults: fixture.defaults)
-        let appState = AppState(
+        let profile = AgentProfile(
             connectionSettings: settings,
             sharingPreferences: preferences,
             identityPinning: IdentityPinningService(
@@ -138,16 +138,16 @@ struct ConnectionSettingsTests {
             )
         )
 
-        #expect(appState.tokenInput == "secret")
+        #expect(profile.tokenInput == "secret")
         #expect(credentials.value(account: settings.securityScope.tokenAccount) == "secret")
 
-        appState.forgetToken()
+        profile.forgetToken()
 
         #expect(credentials.value(account: settings.securityScope.tokenAccount) == nil)
         #expect(credentials.value(account: ConnectionSecurityScope.legacyTokenAccount) == nil)
-        #expect(appState.tokenInput.isEmpty)
+        #expect(profile.tokenInput.isEmpty)
         #expect(settings.isEnabled == false)
-        #expect(appState.connection.state == .disconnected)
+        #expect(profile.connection.state == .disconnected)
     }
 }
 

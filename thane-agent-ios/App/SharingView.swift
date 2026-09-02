@@ -2,8 +2,7 @@ import CoreLocation
 import SwiftUI
 
 struct SharingView: View {
-    @Environment(AppState.self) private var appState
-
+    let profile: AgentProfile
     let counterparty: ThaneCounterparty
 
     var body: some View {
@@ -23,9 +22,9 @@ struct SharingView: View {
 
     private var recipientCard: some View {
         AppCard(title: "Recipient") {
-            if let evidence = appState.presentedIdentity {
+            if let evidence = profile.presentedIdentity {
                 NavigationLink {
-                    IdentityEvidenceView(evidence: evidence)
+                    IdentityEvidenceView(profile: profile, evidence: evidence)
                 } label: {
                     HStack(spacing: 12) {
                         ThaneIdentityMark(identityID: evidence.instance.id, size: 40)
@@ -33,7 +32,7 @@ struct SharingView: View {
                             Text(recipientTitle(for: evidence))
                                 .font(.headline)
                                 .foregroundStyle(.primary)
-                            Text("\(appState.identityStatusLabel) · \(evidence.instance.shortFingerprint)")
+                            Text("\(profile.identityStatusLabel) · \(evidence.instance.shortFingerprint)")
                                 .font(.caption.monospaced())
                                 .foregroundStyle(.secondary)
                         }
@@ -43,19 +42,19 @@ struct SharingView: View {
                     }
                 }
                 .buttonStyle(.plain)
-                if !appState.identityContinuity.permitsPrivateDelivery {
+                if !profile.identityContinuity.permitsPrivateDelivery {
                     Label(
-                        appState.identityContinuity == .mismatch
+                        profile.identityContinuity == .mismatch
                             ? "Sharing blocked by identity mismatch"
                             : "Sharing waits for an identity pin",
-                        systemImage: appState.identityContinuity == .mismatch
+                        systemImage: profile.identityContinuity == .mismatch
                             ? "exclamationmark.shield.fill"
                             : "pin.circle"
                     )
                     .font(.caption)
-                    .foregroundStyle(appState.identityContinuity == .mismatch ? .red : .orange)
+                    .foregroundStyle(profile.identityContinuity == .mismatch ? .red : .orange)
                 }
-            } else if let pin = appState.identityPinning.pin,
+            } else if let pin = profile.identityPinning.pin,
                       pin.identityID == counterparty.id {
                 NavigationLink {
                     IdentityPinView(pin: pin)
@@ -63,7 +62,7 @@ struct SharingView: View {
                     HStack {
                         PinnedIdentitySummary(
                             pin: pin,
-                            status: appState.identityStatusLabel
+                            status: profile.identityStatusLabel
                         )
                         Image(systemName: "chevron.right")
                             .font(.footnote.weight(.semibold))
@@ -91,8 +90,8 @@ struct SharingView: View {
             ForEach(Array(SystemContextCategory.allCases.enumerated()), id: \.element.id) { index, category in
                 if index > 0 { Divider() }
                 Toggle(isOn: Binding(
-                    get: { appState.sharingPreferences.isEnabled(category) },
-                    set: { appState.setSystemCategory(category, enabled: $0) }
+                    get: { profile.sharingPreferences.isEnabled(category) },
+                    set: { profile.setSystemCategory(category, enabled: $0) }
                 )) {
                     PreferenceLabel(title: category.title, detail: category.detail)
                 }
@@ -104,8 +103,8 @@ struct SharingView: View {
     private var locationCard: some View {
         AppCard(title: "Location") {
             Toggle(isOn: Binding(
-                get: { appState.sharingPreferences.locationEnabled },
-                set: { appState.setLocationSharing(enabled: $0) }
+                get: { profile.sharingPreferences.locationEnabled },
+                set: { profile.setLocationSharing(enabled: $0) }
             )) {
                 PreferenceLabel(
                     title: "Current Location",
@@ -114,19 +113,19 @@ struct SharingView: View {
             }
             .disabled(!canEditSharing)
 
-            if appState.sharingPreferences.locationEnabled {
+            if profile.sharingPreferences.locationEnabled {
                 Divider()
 
                 Toggle(isOn: Binding(
-                    get: { appState.sharingPreferences.backgroundLocationEnabled },
-                    set: { appState.setBackgroundLocationSharing(enabled: $0) }
+                    get: { profile.sharingPreferences.backgroundLocationEnabled },
+                    set: { profile.setBackgroundLocationSharing(enabled: $0) }
                 )) {
                     PreferenceLabel(
                         title: "Background Location Updates",
                         detail: "Publishes the latest snapshot when iOS reports a significant location change. This is not continuous tracking."
                     )
                 }
-                .disabled(appState.locationService.authorizationStatus == .notDetermined)
+                .disabled(profile.locationService.authorizationStatus == .notDetermined)
 
                 Divider()
 
@@ -137,7 +136,7 @@ struct SharingView: View {
                     color: locationPermissionColor
                 )
 
-                if appState.sharingPreferences.backgroundLocationEnabled {
+                if profile.sharingPreferences.backgroundLocationEnabled {
                     OperationalRow(
                         title: "Monitor",
                         value: backgroundMonitorLabel,
@@ -148,7 +147,7 @@ struct SharingView: View {
 
                 if locationPermissionNeedsSettings || backgroundPermissionNeedsSettings {
                     Button("Open iOS Settings") {
-                        appState.openIOSSettings()
+                        profile.openIOSSettings()
                     }
                     .buttonStyle(.bordered)
                     .frame(maxWidth: .infinity)
@@ -168,35 +167,35 @@ struct SharingView: View {
     }
 
     private var canEditSharing: Bool {
-        appState.sharingPreferences.counterpartyID == counterparty.id
-            && appState.identityPinning.pin?.identityID == counterparty.id
+        profile.sharingPreferences.counterpartyID == counterparty.id
+            && profile.identityPinning.pin?.identityID == counterparty.id
     }
 
     private var pinnedRecipientDetail: String {
-        if appState.identityContinuity == .mismatch {
+        if profile.identityContinuity == .mismatch {
             return "The configured endpoint presents a different identity. Delivery remains blocked while this sharing policy stays attached to \(counterparty.displayName)."
         }
         return "Current evidence is unavailable. Live requests and observation uploads remain disabled until the endpoint presents identity evidence matching \(counterparty.displayName)."
     }
 
     private func recipientTitle(for evidence: ThaneIdentityEvidence) -> String {
-        appState.identityContinuity.permitsPrivateDelivery
+        profile.identityContinuity.permitsPrivateDelivery
             ? "Shared with pinned \(evidence.instance.name)"
             : "Presented by \(evidence.instance.name)"
     }
 
     private var locationPermissionLabel: String {
-        let authorization = appState.locationService.authorizationLabel
+        let authorization = profile.locationService.authorizationLabel
             .replacingOccurrences(of: "_", with: " ")
             .capitalized
-        if let accuracy = appState.locationService.accuracyLabel {
+        if let accuracy = profile.locationService.accuracyLabel {
             return "\(authorization) · \(accuracy.capitalized) accuracy"
         }
         return authorization
     }
 
     private var locationPermissionColor: Color {
-        switch appState.locationService.authorizationStatus {
+        switch profile.locationService.authorizationStatus {
         case .authorizedAlways, .authorizedWhenInUse: .green
         case .notDetermined: .orange
         case .denied, .restricted: .red
@@ -205,40 +204,43 @@ struct SharingView: View {
     }
 
     private var locationPermissionNeedsSettings: Bool {
-        switch appState.locationService.authorizationStatus {
+        switch profile.locationService.authorizationStatus {
         case .denied, .restricted: true
         default: false
         }
     }
 
     private var backgroundPermissionNeedsSettings: Bool {
-        appState.sharingPreferences.backgroundLocationEnabled
-            && appState.locationService.authorizationStatus != .authorizedAlways
-            && appState.locationService.authorizationStatus != .notDetermined
+        profile.sharingPreferences.backgroundLocationEnabled
+            && profile.locationService.authorizationStatus != .authorizedAlways
+            && profile.locationService.authorizationStatus != .notDetermined
     }
 
     private var backgroundMonitorLabel: String {
-        if !appState.locationService.isSignificantLocationChangeMonitoringAvailable {
+        if !profile.locationService.isSignificantLocationChangeMonitoringAvailable {
             return "Unavailable on this device"
         }
-        return appState.locationService.isBackgroundMonitoringActive
+        return profile.locationService.isBackgroundMonitoringActive
             ? "Active"
             : "Waiting for Always permission"
     }
 
     private var backgroundMonitorColor: Color {
-        if !appState.locationService.isSignificantLocationChangeMonitoringAvailable {
+        if !profile.locationService.isSignificantLocationChangeMonitoringAvailable {
             return .red
         }
-        return appState.locationService.isBackgroundMonitoringActive ? .green : .orange
+        return profile.locationService.isBackgroundMonitoringActive ? .green : .orange
     }
 }
 
 #if DEBUG
 #Preview("Sharing") {
+    let profile = PreviewFixtures.appState().activeProfile
     NavigationStack {
-        SharingView(counterparty: PreviewFixtures.counterparty)
+        SharingView(
+            profile: profile,
+            counterparty: PreviewFixtures.counterparty
+        )
     }
-    .environment(PreviewFixtures.appState())
 }
 #endif

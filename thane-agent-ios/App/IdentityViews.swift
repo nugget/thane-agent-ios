@@ -140,8 +140,8 @@ struct IdentityPinView: View {
 }
 
 struct IdentityEvidenceView: View {
+    let profile: AgentProfile
     let evidence: ThaneIdentityEvidence
-    @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -169,12 +169,12 @@ struct IdentityEvidenceView: View {
 
                 if continuity == .presented {
                     Button("Pin \(evidence.instance.name) & Connect") {
-                        appState.pin(evidence)
-                        if appState.identityContinuity.permitsPrivateDelivery {
+                        profile.pin(evidence)
+                        if profile.identityContinuity.permitsPrivateDelivery {
                             dismiss()
                         }
                     }
-                } else if let pin = appState.identityPinning.pin {
+                } else if let pin = profile.identityPinning.pin {
                     LabeledContent(
                         "Pinned on this iPhone",
                         value: pin.pinnedAt.formatted(date: .abbreviated, time: .shortened)
@@ -234,22 +234,22 @@ struct IdentityEvidenceView: View {
                     )
                 }
 
-                if appState.connection.transportCertificateChain.isEmpty {
+                if profile.connection.transportCertificateChain.isEmpty {
                     LabeledContent(
                         "HTTPS/WSS transport",
-                        value: appState.hasActiveConnection ? "Unavailable" : "Not connected"
+                        value: profile.hasActiveConnection ? "Unavailable" : "Not connected"
                     )
                 } else {
                     NavigationLink {
                         TransportCertificateChainView(
-                            endpoint: appState.connection.transportCertificateEndpoint,
-                            certificates: appState.connection.transportCertificateChain,
-                            capturedAt: appState.connection.transportCertificateCapturedAt
+                            endpoint: profile.connection.transportCertificateEndpoint,
+                            certificates: profile.connection.transportCertificateChain,
+                            capturedAt: profile.connection.transportCertificateCapturedAt
                         )
                     } label: {
                         LabeledContent("HTTPS/WSS transport") {
                             Text(
-                                "\(appState.connection.transportCertificateChain.count) certificate\(appState.connection.transportCertificateChain.count == 1 ? "" : "s")"
+                                "\(profile.connection.transportCertificateChain.count) certificate\(profile.connection.transportCertificateChain.count == 1 ? "" : "s")"
                             )
                             .foregroundStyle(.secondary)
                         }
@@ -323,7 +323,7 @@ struct IdentityEvidenceView: View {
 
     private var continuity: IdentityContinuityState {
         IdentityContinuityState.evaluate(
-            pin: appState.identityPinning.pin,
+            pin: profile.identityPinning.pin,
             evidence: evidence
         )
     }
@@ -432,9 +432,12 @@ private struct VerificationRow: View {
 }
 
 #Preview("Identity Evidence") {
+    let profile = PreviewFixtures.appState().activeProfile
     NavigationStack {
-        IdentityEvidenceView(evidence: PreviewFixtures.evidence)
+        IdentityEvidenceView(
+            profile: profile,
+            evidence: PreviewFixtures.evidence
+        )
     }
-    .environment(PreviewFixtures.appState())
 }
 #endif

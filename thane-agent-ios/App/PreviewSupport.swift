@@ -142,8 +142,7 @@ enum PreviewFixtures {
         let identityService = IdentityService(
             fetcher: PreviewIdentityFetcher(evidence: identity)
         )
-        let appState = AppState(
-            appPreferences: AppPreferences(defaults: defaults),
+        let profile = AgentProfile(
             connectionSettings: connectionSettings,
             sharingPreferences: sharingPreferences,
             identityService: identityService,
@@ -165,6 +164,10 @@ enum PreviewFixtures {
                     updatedAt: Date().addingTimeInterval(-2_700)
                 ),
             ])
+        )
+        let appState = AppState(
+            appPreferences: AppPreferences(defaults: defaults),
+            profiles: [profile]
         )
 
         sharingPreferences.setEnabled(true, for: .regional)

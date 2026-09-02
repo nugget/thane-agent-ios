@@ -4,27 +4,27 @@ import Testing
 
 @Suite("App identity boundary")
 @MainActor
-struct AppStateIdentityBoundaryTests {
+struct AgentProfileIdentityBoundaryTests {
     @Test("First connection waits for an explicit identity pin")
     func firstConnectionWaitsForPin() async throws {
         let evidence = try IdentityTestFixture.freshEvidence()
         let fixture = try AppIdentityFixture(evidence: evidence)
         defer { fixture.cleanup() }
 
-        fixture.appState.connectUsingCurrentValues()
+        fixture.profile.connectUsingCurrentValues()
         try await fixture.waitForIdentityRefresh()
 
-        #expect(fixture.appState.identityContinuity == .presented)
-        #expect(fixture.appState.connection.state == .disconnected)
-        #expect(fixture.appState.connectionSettings.isEnabled)
+        #expect(fixture.profile.identityContinuity == .presented)
+        #expect(fixture.profile.connection.state == .disconnected)
+        #expect(fixture.profile.connectionSettings.isEnabled)
 
-        fixture.appState.pinPresentedIdentity()
+        fixture.profile.pinPresentedIdentity()
 
-        #expect(fixture.appState.identityPinning.pin?.matches(evidence) == true)
-        #expect(fixture.appState.identityContinuity.permitsPrivateDelivery)
-        #expect(fixture.appState.sharingPreferences.counterpartyID == evidence.instance.id)
-        #expect(fixture.appState.connection.state != .disconnected)
-        fixture.appState.disconnect()
+        #expect(fixture.profile.identityPinning.pin?.matches(evidence) == true)
+        #expect(fixture.profile.identityContinuity.permitsPrivateDelivery)
+        #expect(fixture.profile.sharingPreferences.counterpartyID == evidence.instance.id)
+        #expect(fixture.profile.connection.state != .disconnected)
+        fixture.profile.disconnect()
     }
 
     @Test("Pinning from an evidence screen pins that exact evidence")
@@ -47,11 +47,11 @@ struct AppStateIdentityBoundaryTests {
         let fixture = try AppIdentityFixture(evidence: otherEvidence)
         defer { fixture.cleanup() }
 
-        fixture.appState.pin(evidence)
+        fixture.profile.pin(evidence)
 
-        #expect(fixture.appState.identityPinning.pin?.matches(evidence) == true)
-        #expect(fixture.appState.identityContinuity == .unavailable)
-        #expect(fixture.appState.sharingPreferences.counterpartyID == evidence.instance.id)
+        #expect(fixture.profile.identityPinning.pin?.matches(evidence) == true)
+        #expect(fixture.profile.identityContinuity == .unavailable)
+        #expect(fixture.profile.sharingPreferences.counterpartyID == evidence.instance.id)
     }
 
     @Test("A presented identity mismatch blocks connection establishment")
@@ -77,13 +77,13 @@ struct AppStateIdentityBoundaryTests {
         )
         defer { fixture.cleanup() }
 
-        fixture.appState.connectUsingCurrentValues()
+        fixture.profile.connectUsingCurrentValues()
         try await fixture.waitForIdentityRefresh()
 
-        #expect(fixture.appState.identityContinuity == .mismatch)
-        #expect(fixture.appState.connection.state == .disconnected)
+        #expect(fixture.profile.identityContinuity == .mismatch)
+        #expect(fixture.profile.connection.state == .disconnected)
         #expect(
-            fixture.appState.displayedError
+            fixture.profile.displayedError
                 == "The presented identity does not match pocket's pin on this iPhone. Private delivery is blocked."
         )
     }
@@ -107,13 +107,13 @@ struct AppStateIdentityBoundaryTests {
         )
         defer { fixture.cleanup() }
 
-        fixture.appState.activate()
+        fixture.profile.activate()
 
         #expect(identityService.isRefreshing)
-        #expect(fixture.appState.identityContinuity == .unavailable)
-        #expect(fixture.appState.connection.state == .disconnected)
+        #expect(fixture.profile.identityContinuity == .unavailable)
+        #expect(fixture.profile.connection.state == .disconnected)
         try await waitUntil { !identityService.isRefreshing }
-        #expect(fixture.appState.connection.state == .disconnected)
+        #expect(fixture.profile.connection.state == .disconnected)
     }
 
     @Test("Foreground activation preserves the last connection error")
@@ -125,11 +125,11 @@ struct AppStateIdentityBoundaryTests {
             connectionEnabled: true
         )
         defer { fixture.cleanup() }
-        fixture.appState.connection.handleAuthenticationFailure("Invalid token")
+        fixture.profile.connection.handleAuthenticationFailure("Invalid token")
 
-        fixture.appState.activate()
+        fixture.profile.activate()
 
-        #expect(fixture.appState.displayedError == "Authentication failed: Invalid token")
+        #expect(fixture.profile.displayedError == "Authentication failed: Invalid token")
     }
 
     @Test("Stale identity evidence blocks private delivery")
@@ -145,14 +145,14 @@ struct AppStateIdentityBoundaryTests {
         )
         defer { fixture.cleanup() }
 
-        fixture.appState.connectUsingCurrentValues()
+        fixture.profile.connectUsingCurrentValues()
         try await fixture.waitForIdentityRefresh()
 
-        #expect(fixture.appState.identityContinuity == .stale)
-        #expect(!fixture.appState.identityContinuity.permitsPrivateDelivery)
-        #expect(fixture.appState.connection.state == .disconnected)
+        #expect(fixture.profile.identityContinuity == .stale)
+        #expect(!fixture.profile.identityContinuity.permitsPrivateDelivery)
+        #expect(fixture.profile.connection.state == .disconnected)
         #expect(
-            fixture.appState.displayedError
+            fixture.profile.displayedError
                 == "Identity evidence is more than 15 minutes old. Refresh it before private delivery resumes."
         )
     }
@@ -167,13 +167,13 @@ struct AppStateIdentityBoundaryTests {
         )
         defer { fixture.cleanup() }
 
-        fixture.appState.connection.onReconnectValidationRequested?()
+        fixture.profile.connection.onReconnectValidationRequested?()
 
-        #expect(fixture.appState.identityService.isRefreshing)
-        #expect(fixture.appState.connection.state == .disconnected)
+        #expect(fixture.profile.identityService.isRefreshing)
+        #expect(fixture.profile.connection.state == .disconnected)
         try await fixture.waitForIdentityRefresh()
-        #expect(fixture.appState.identityContinuity == .matching)
-        #expect(fixture.appState.connection.state != .disconnected)
+        #expect(fixture.profile.identityContinuity == .matching)
+        #expect(fixture.profile.connection.state != .disconnected)
     }
 
     @Test("Forgetting a pin suspends but preserves that counterparty's sharing policy")
@@ -185,21 +185,21 @@ struct AppStateIdentityBoundaryTests {
         )
         defer { fixture.cleanup() }
 
-        fixture.appState.connectUsingCurrentValues()
+        fixture.profile.connectUsingCurrentValues()
         try await fixture.waitForIdentityRefresh()
-        fixture.appState.setSystemCategory(.regional, enabled: true)
-        #expect(fixture.appState.sharingPreferences.regionalEnabled)
+        fixture.profile.setSystemCategory(.regional, enabled: true)
+        #expect(fixture.profile.sharingPreferences.regionalEnabled)
 
-        await fixture.appState.forgetThane()
+        await fixture.profile.forgetThane()
 
-        #expect(fixture.appState.identityPinning.pin == nil)
-        #expect(fixture.appState.sharingPreferences.counterpartyID == nil)
-        #expect(fixture.appState.sharingPreferences.hasEnabledData == false)
+        #expect(fixture.profile.identityPinning.pin == nil)
+        #expect(fixture.profile.sharingPreferences.counterpartyID == nil)
+        #expect(fixture.profile.sharingPreferences.hasEnabledData == false)
 
-        fixture.appState.pinPresentedIdentity()
-        #expect(fixture.appState.sharingPreferences.counterpartyID == evidence.instance.id)
-        #expect(fixture.appState.sharingPreferences.regionalEnabled)
-        fixture.appState.disconnect()
+        fixture.profile.pinPresentedIdentity()
+        #expect(fixture.profile.sharingPreferences.counterpartyID == evidence.instance.id)
+        #expect(fixture.profile.sharingPreferences.regionalEnabled)
+        fixture.profile.disconnect()
     }
 
     @Test("Re-pinning the same counterparty preserves its pairwise client identity")
@@ -210,19 +210,19 @@ struct AppStateIdentityBoundaryTests {
             pinnedEvidence: evidence
         )
         defer { fixture.cleanup() }
-        let clientID = fixture.appState.connectionSettings.pairwiseClientID
+        let clientID = fixture.profile.connectionSettings.pairwiseClientID
 
-        fixture.appState.connectUsingCurrentValues()
+        fixture.profile.connectUsingCurrentValues()
         try await fixture.waitForIdentityRefresh()
-        await fixture.appState.forgetThane()
-        fixture.appState.pinPresentedIdentity()
+        await fixture.profile.forgetThane()
+        fixture.profile.pinPresentedIdentity()
 
-        #expect(fixture.appState.connectionSettings.pairwiseClientID == clientID)
+        #expect(fixture.profile.connectionSettings.pairwiseClientID == clientID)
         #expect(
-            fixture.appState.connectionSettings.pairwiseCounterpartyID
+            fixture.profile.connectionSettings.pairwiseCounterpartyID
                 == evidence.instance.id
         )
-        fixture.appState.disconnect()
+        fixture.profile.disconnect()
     }
 
     @Test("Rebinding a profile to a different counterparty rotates its pairwise client identity")
@@ -247,20 +247,20 @@ struct AppStateIdentityBoundaryTests {
             pinnedEvidence: pinnedEvidence
         )
         defer { fixture.cleanup() }
-        let clientID = fixture.appState.connectionSettings.pairwiseClientID
+        let clientID = fixture.profile.connectionSettings.pairwiseClientID
 
-        fixture.appState.connectUsingCurrentValues()
+        fixture.profile.connectUsingCurrentValues()
         try await fixture.waitForIdentityRefresh()
-        #expect(fixture.appState.identityContinuity == .mismatch)
-        await fixture.appState.forgetThane()
-        fixture.appState.pinPresentedIdentity()
+        #expect(fixture.profile.identityContinuity == .mismatch)
+        await fixture.profile.forgetThane()
+        fixture.profile.pinPresentedIdentity()
 
-        #expect(fixture.appState.connectionSettings.pairwiseClientID != clientID)
+        #expect(fixture.profile.connectionSettings.pairwiseClientID != clientID)
         #expect(
-            fixture.appState.connectionSettings.pairwiseCounterpartyID
+            fixture.profile.connectionSettings.pairwiseCounterpartyID
                 == otherEvidence.instance.id
         )
-        fixture.appState.disconnect()
+        fixture.profile.disconnect()
     }
 
     @Test("Removing a connection deletes its identity-scoped local state")
@@ -271,26 +271,28 @@ struct AppStateIdentityBoundaryTests {
             pinnedEvidence: evidence
         )
         defer { fixture.cleanup() }
-        let originalConnectionID = fixture.appState.connectionSettings.connectionID
-        let originalClientID = fixture.appState.connectionSettings.pairwiseClientID
+        let profileID = fixture.profile.id
+        let originalConnectionID = fixture.profile.connectionSettings.connectionID
+        let originalClientID = fixture.profile.connectionSettings.pairwiseClientID
 
-        fixture.appState.setSystemCategory(.regional, enabled: true)
-        await fixture.appState.removeConnection()
+        fixture.profile.setSystemCategory(.regional, enabled: true)
+        await fixture.profile.removeConnection()
 
-        #expect(fixture.appState.configuredConnections.isEmpty)
-        #expect(fixture.appState.connectionSettings.connectionID != originalConnectionID)
-        #expect(fixture.appState.connectionSettings.pairwiseClientID != originalClientID)
+        #expect(!fixture.profile.hasConnectionConfiguration)
+        #expect(fixture.profile.id == profileID)
+        #expect(fixture.profile.connectionSettings.connectionID != originalConnectionID)
+        #expect(fixture.profile.connectionSettings.pairwiseClientID != originalClientID)
         #expect(
-            fixture.appState.identityPinning.connectionID
-                == fixture.appState.connectionSettings.connectionID
+            fixture.profile.identityPinning.connectionID
+                == fixture.profile.connectionSettings.connectionID
         )
-        #expect(fixture.appState.connectionSettings.urlString.isEmpty)
-        #expect(fixture.appState.tokenInput.isEmpty)
-        #expect(fixture.appState.identityPinning.pin == nil)
-        #expect(fixture.appState.sharingPreferences.counterpartyID == nil)
+        #expect(fixture.profile.connectionSettings.urlString.isEmpty)
+        #expect(fixture.profile.tokenInput.isEmpty)
+        #expect(fixture.profile.identityPinning.pin == nil)
+        #expect(fixture.profile.sharingPreferences.counterpartyID == nil)
 
-        fixture.appState.sharingPreferences.scope(to: evidence.instance.id)
-        #expect(fixture.appState.sharingPreferences.hasEnabledData == false)
+        fixture.profile.sharingPreferences.scope(to: evidence.instance.id)
+        #expect(fixture.profile.sharingPreferences.hasEnabledData == false)
     }
 
     @Test("Removing after forgetting a pin still deletes scoped sharing")
@@ -302,12 +304,12 @@ struct AppStateIdentityBoundaryTests {
         )
         defer { fixture.cleanup() }
 
-        fixture.appState.setSystemCategory(.regional, enabled: true)
-        await fixture.appState.forgetThane()
-        await fixture.appState.removeConnection()
+        fixture.profile.setSystemCategory(.regional, enabled: true)
+        await fixture.profile.forgetThane()
+        await fixture.profile.removeConnection()
 
-        fixture.appState.sharingPreferences.scope(to: evidence.instance.id)
-        #expect(fixture.appState.sharingPreferences.hasEnabledData == false)
+        fixture.profile.sharingPreferences.scope(to: evidence.instance.id)
+        #expect(fixture.profile.sharingPreferences.hasEnabledData == false)
     }
 
     @Test("A token deletion failure leaves the configured profile retryable")
@@ -318,18 +320,18 @@ struct AppStateIdentityBoundaryTests {
             pinnedEvidence: evidence
         )
         defer { fixture.cleanup() }
-        let originalConnectionID = fixture.appState.connectionSettings.connectionID
+        let originalConnectionID = fixture.profile.connectionSettings.connectionID
         fixture.secureStore.failingDeleteAccounts.insert(
-            fixture.appState.connectionSettings.securityScope.tokenAccount
+            fixture.profile.connectionSettings.securityScope.tokenAccount
         )
 
-        await fixture.appState.removeConnection()
+        await fixture.profile.removeConnection()
 
-        #expect(fixture.appState.connectionSettings.connectionID == originalConnectionID)
-        #expect(!fixture.appState.connectionSettings.urlString.isEmpty)
-        #expect(fixture.appState.tokenInput == "secret")
-        #expect(fixture.appState.identityPinning.pin?.matches(evidence) == true)
-        #expect(fixture.appState.displayedError != nil)
+        #expect(fixture.profile.connectionSettings.connectionID == originalConnectionID)
+        #expect(!fixture.profile.connectionSettings.urlString.isEmpty)
+        #expect(fixture.profile.tokenInput == "secret")
+        #expect(fixture.profile.identityPinning.pin?.matches(evidence) == true)
+        #expect(fixture.profile.displayedError != nil)
     }
 
     private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async throws {
@@ -343,7 +345,7 @@ struct AppStateIdentityBoundaryTests {
 
 @MainActor
 private final class AppIdentityFixture {
-    let appState: AppState
+    let profile: AgentProfile
     let secureStore: AppIdentitySecureStore
 
     private let suite: String
@@ -356,7 +358,7 @@ private final class AppIdentityFixture {
         identityService: IdentityService? = nil,
         connectionEnabled: Bool = false
     ) throws {
-        suite = "AppStateIdentityBoundaryTests.\(UUID().uuidString)"
+        suite = "AgentProfileIdentityBoundaryTests.\(UUID().uuidString)"
         defaults = try #require(UserDefaults(suiteName: suite))
         directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(suite, isDirectory: true)
@@ -382,7 +384,7 @@ private final class AppIdentityFixture {
             ),
             uploader: AppIdentityUploader()
         )
-        appState = AppState(
+        profile = AgentProfile(
             connectionSettings: settings,
             sharingPreferences: SharingPreferences(defaults: defaults),
             observationPublisher: publisher,
@@ -395,8 +397,8 @@ private final class AppIdentityFixture {
 
     func waitForIdentityRefresh() async throws {
         for _ in 0..<100 {
-            if !appState.identityService.isRefreshing,
-               appState.presentedIdentity != nil {
+            if !profile.identityService.isRefreshing,
+               profile.presentedIdentity != nil {
                 return
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -405,7 +407,7 @@ private final class AppIdentityFixture {
     }
 
     func cleanup() {
-        appState.disconnect()
+        profile.disconnect()
         defaults.removePersistentDomain(forName: suite)
         try? FileManager.default.removeItem(at: directoryURL)
     }
