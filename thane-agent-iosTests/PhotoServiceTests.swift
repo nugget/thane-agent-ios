@@ -74,7 +74,7 @@ struct PhotoServiceTests {
         )
 
         #expect(library.lastLimit == 3)
-        #expect(library.lastIncludedEmbeddedMetadata == true)
+        #expect(library.lastEmbeddedMetadataLimit == 2)
         #expect(snapshot.authorization == .full)
         #expect(snapshot.hiddenAssetsExcluded)
         #expect(snapshot.iCloudDownloadsAllowed == false)
@@ -156,6 +156,60 @@ struct PhotoServiceTests {
         #expect(library.fetchCount == 0)
     }
 
+    @Test("Consent revocation invalidates an in-flight metadata request")
+    func consentRevocationInvalidatesInFlightRequest() async throws {
+        let fixture = try PhotoPreferencesFixture(photosEnabled: true)
+        defer { fixture.cleanup() }
+        let library = FakePhotoLibrary(
+            authorizationStatus: .full,
+            assets: [makePhotoAsset(id: "asset", timestamp: 100)],
+            suspendsFetch: true
+        )
+        let service = PhotoService(
+            preferences: fixture.preferences,
+            library: library,
+            identifierNamespace: { "pairwise-one" }
+        )
+        let request = Task { @MainActor in
+            try await service.recentPhotos()
+        }
+        try await waitForPhotoCondition { library.hasPendingFetch }
+
+        fixture.preferences.photosEnabled = false
+        service.cancelPendingRequestAfterConsentRevocation()
+        fixture.preferences.photosEnabled = true
+        library.resumeFetch()
+
+        do {
+            _ = try await request.value
+            Issue.record("Expected revoked in-flight Photos request to fail")
+        } catch let error as PhotoServiceError {
+            #expect(error.code == "photos_sharing_disabled")
+        }
+    }
+
+    @Test("Non-finite embedded values are omitted from transport metadata")
+    func nonFiniteMetadata() throws {
+        let metadata = PhotoEmbeddedMetadata(
+            orientation: 1,
+            cameraMake: "Apple",
+            cameraModel: "iPhone",
+            lensMake: nil,
+            lensModel: nil,
+            exposureTimeSeconds: .nan,
+            fNumber: .infinity,
+            isoSpeedRatings: [80],
+            focalLengthMillimeters: -.infinity,
+            exposureBiasEV: 0
+        )
+
+        #expect(metadata.exposureTimeSeconds == nil)
+        #expect(metadata.fNumber == nil)
+        #expect(metadata.focalLengthMillimeters == nil)
+        #expect(metadata.exposureBiasEV == 0)
+        _ = try JSONEncoder().encode(metadata)
+    }
+
     @Test("The companion-authored tool schema and parameters stay aligned")
     func toolContract() async throws {
         let fixture = try PhotoPreferencesFixture(photosEnabled: true)
@@ -186,7 +240,7 @@ struct PhotoServiceTests {
         let object = try #require(result.value as? [String: Any])
 
         #expect(library.lastLimit == 2)
-        #expect(library.lastIncludedEmbeddedMetadata == false)
+        #expect(library.lastEmbeddedMetadataLimit == 0)
         #expect(object["returned_count"] as? Int64 == 1)
         #expect(object["icloud_downloads_allowed"] as? Bool == false)
         let photos = try #require(object["photos"] as? [[String: Any]])
@@ -213,16 +267,21 @@ private final class FakePhotoLibrary: PhotoLibraryReading {
     private(set) var authorizationRequestCount = 0
     private(set) var fetchCount = 0
     private(set) var lastLimit: Int?
-    private(set) var lastIncludedEmbeddedMetadata: Bool?
+    private(set) var lastEmbeddedMetadataLimit: Int?
+    private(set) var hasPendingFetch = false
+    private var fetchContinuation: CheckedContinuation<[PhotoLibraryAsset], Error>?
+    private let suspendsFetch: Bool
 
     init(
         authorizationStatus: PhotoAuthorizationState,
         requestedAuthorization: PhotoAuthorizationState? = nil,
-        assets: [PhotoLibraryAsset] = []
+        assets: [PhotoLibraryAsset] = [],
+        suspendsFetch: Bool = false
     ) {
         self.authorizationStatus = authorizationStatus
         self.requestedAuthorization = requestedAuthorization ?? authorizationStatus
         self.assets = assets
+        self.suspendsFetch = suspendsFetch
     }
 
     func requestAuthorization() async -> PhotoAuthorizationState {
@@ -233,12 +292,25 @@ private final class FakePhotoLibrary: PhotoLibraryReading {
 
     func fetchRecentPhotos(
         limit: Int,
-        includeEmbeddedMetadata: Bool
+        embeddedMetadataLimit: Int
     ) async throws -> [PhotoLibraryAsset] {
         fetchCount += 1
         lastLimit = limit
-        lastIncludedEmbeddedMetadata = includeEmbeddedMetadata
+        lastEmbeddedMetadataLimit = embeddedMetadataLimit
+        if suspendsFetch {
+            hasPendingFetch = true
+            return try await withCheckedThrowingContinuation { continuation in
+                fetchContinuation = continuation
+            }
+        }
         return Array(assets.prefix(limit))
+    }
+
+    func resumeFetch() {
+        hasPendingFetch = false
+        let continuation = fetchContinuation
+        fetchContinuation = nil
+        continuation?.resume(returning: Array(assets.prefix(lastLimit ?? 0)))
     }
 }
 
@@ -308,4 +380,14 @@ private func expectPhotoError(
     } catch {
         Issue.record("Unexpected error: \(error)")
     }
+}
+
+@MainActor
+private func waitForPhotoCondition(
+    _ condition: @escaping @MainActor () -> Bool
+) async throws {
+    for _ in 0..<100 where !condition() {
+        try await Task.sleep(for: .milliseconds(1))
+    }
+    try #require(condition())
 }

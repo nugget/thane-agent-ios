@@ -33,7 +33,8 @@ final class AgentProfile: Identifiable {
         identityService: IdentityService = IdentityService(),
         identityPinning: IdentityPinningService? = nil,
         conversationStore: ConversationStore = ConversationStore(),
-        inboxStore: InboxStore? = nil
+        inboxStore: InboxStore? = nil,
+        photoLibrary: (any PhotoLibraryReading)? = nil
     ) {
         let identityPinning = identityPinning ?? IdentityPinningService(
             connectionID: connectionSettings.connectionID
@@ -66,6 +67,7 @@ final class AgentProfile: Identifiable {
         let locationService = LocationService(preferences: sharingPreferences)
         let photoService = PhotoService(
             preferences: sharingPreferences,
+            library: photoLibrary ?? SystemPhotoLibraryReader(),
             identifierNamespace: { connectionSettings.pairwiseClientID }
         )
 
@@ -432,19 +434,20 @@ final class AgentProfile: Identifiable {
 
     func setPhotoSharing(enabled: Bool) async {
         configurationError = nil
-        guard sharingPreferences.counterpartyID == identityPinning.pin?.identityID,
-              sharingPreferences.counterpartyID != nil else {
+        guard let counterpartyID = sharingPreferences.counterpartyID,
+              counterpartyID == identityPinning.pin?.identityID else {
             configurationError = "Pin this agent before changing what is shared with it."
             return
         }
         guard enabled else {
             sharingPreferences.photosEnabled = false
+            photoService.cancelPendingRequestAfterConsentRevocation()
             return
         }
 
         let authorization = await photoService.requestAuthorizationFromOperatorAction()
-        guard sharingPreferences.counterpartyID == identityPinning.pin?.identityID,
-              sharingPreferences.counterpartyID != nil else {
+        guard sharingPreferences.counterpartyID == counterpartyID,
+              identityPinning.pin?.identityID == counterpartyID else {
             return
         }
         if authorization.permitsRead {
@@ -505,6 +508,7 @@ final class AgentProfile: Identifiable {
 
     private func applySharingScope(_ counterpartyID: String?) {
         locationService.suspendForCounterpartyChange()
+        photoService.suspendForCounterpartyChange()
         sharingPreferences.scope(to: counterpartyID)
         systemContextService.setNetworkObservationEnabled(sharingPreferences.networkEnabled)
         systemContextService.setDeviceObservationEnabled(sharingPreferences.deviceEnabled)

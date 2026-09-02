@@ -49,6 +49,30 @@ nonisolated struct PhotoEmbeddedMetadata: Codable, Equatable, Sendable {
     let focalLengthMillimeters: Double?
     let exposureBiasEV: Double?
 
+    init(
+        orientation: Int?,
+        cameraMake: String?,
+        cameraModel: String?,
+        lensMake: String?,
+        lensModel: String?,
+        exposureTimeSeconds: Double?,
+        fNumber: Double?,
+        isoSpeedRatings: [Int]?,
+        focalLengthMillimeters: Double?,
+        exposureBiasEV: Double?
+    ) {
+        self.orientation = orientation
+        self.cameraMake = cameraMake
+        self.cameraModel = cameraModel
+        self.lensMake = lensMake
+        self.lensModel = lensModel
+        self.exposureTimeSeconds = Self.finite(exposureTimeSeconds)
+        self.fNumber = Self.finite(fNumber)
+        self.isoSpeedRatings = isoSpeedRatings
+        self.focalLengthMillimeters = Self.finite(focalLengthMillimeters)
+        self.exposureBiasEV = Self.finite(exposureBiasEV)
+    }
+
     enum CodingKeys: String, CodingKey {
         case orientation
         case cameraMake = "camera_make"
@@ -60,6 +84,11 @@ nonisolated struct PhotoEmbeddedMetadata: Codable, Equatable, Sendable {
         case isoSpeedRatings = "iso_speed_ratings"
         case focalLengthMillimeters = "focal_length_millimeters"
         case exposureBiasEV = "exposure_bias_ev"
+    }
+
+    private static func finite(_ value: Double?) -> Double? {
+        guard let value, value.isFinite else { return nil }
+        return value
     }
 }
 
@@ -182,7 +211,7 @@ protocol PhotoLibraryReading: AnyObject {
     func requestAuthorization() async -> PhotoAuthorizationState
     func fetchRecentPhotos(
         limit: Int,
-        includeEmbeddedMetadata: Bool
+        embeddedMetadataLimit: Int
     ) async throws -> [PhotoLibraryAsset]
 }
 
@@ -202,7 +231,7 @@ final class SystemPhotoLibraryReader: PhotoLibraryReading {
 
     func fetchRecentPhotos(
         limit: Int,
-        includeEmbeddedMetadata: Bool
+        embeddedMetadataLimit: Int
     ) async throws -> [PhotoLibraryAsset] {
         let options = PHFetchOptions()
         options.fetchLimit = limit
@@ -218,7 +247,7 @@ final class SystemPhotoLibraryReader: PhotoLibraryReading {
 
         for index in 0..<result.count {
             let asset = result.object(at: index)
-            let embedded = includeEmbeddedMetadata
+            let embedded = index < embeddedMetadataLimit
                 ? await embeddedMetadata(for: asset)
                 : PhotoEmbeddedMetadataResult(status: .notRequested, metadata: nil)
             let resource = Self.preferredResource(for: asset)
@@ -403,6 +432,7 @@ final class PhotoService {
     private let preferences: SharingPreferences
     private let library: any PhotoLibraryReading
     private let identifierNamespace: @MainActor () -> String
+    private var requestGeneration: UInt64 = 0
 
     private(set) var authorizationStatus: PhotoAuthorizationState
 
@@ -431,6 +461,14 @@ final class PhotoService {
         return authorizationStatus
     }
 
+    func cancelPendingRequestAfterConsentRevocation() {
+        requestGeneration &+= 1
+    }
+
+    func suspendForCounterpartyChange() {
+        requestGeneration &+= 1
+    }
+
     func recentPhotos(
         limit: Int = defaultPhotoCount,
         includeEmbeddedMetadata: Bool = true,
@@ -444,7 +482,7 @@ final class PhotoService {
         guard preferences.photosEnabled else {
             throw PhotoServiceError.sharingDisabled
         }
-        guard preferences.counterpartyID != nil else {
+        guard let counterpartyID = preferences.counterpartyID else {
             throw PhotoServiceError.identityUnavailable
         }
 
@@ -464,15 +502,24 @@ final class PhotoService {
         guard !namespace.isEmpty else {
             throw PhotoServiceError.identityUnavailable
         }
+        let requestGeneration = self.requestGeneration
 
         let fetched: [PhotoLibraryAsset]
         do {
             fetched = try await library.fetchRecentPhotos(
                 limit: limit + 1,
-                includeEmbeddedMetadata: includeEmbeddedMetadata
+                embeddedMetadataLimit: includeEmbeddedMetadata ? limit : 0
             )
         } catch {
             throw PhotoServiceError.libraryUnavailable(error.localizedDescription)
+        }
+        guard requestGeneration == self.requestGeneration,
+              preferences.photosEnabled else {
+            throw PhotoServiceError.sharingDisabled
+        }
+        guard preferences.counterpartyID == counterpartyID,
+              identifierNamespace() == namespace else {
+            throw PhotoServiceError.identityUnavailable
         }
         let selected = fetched.prefix(limit)
         let photos = selected.map { asset in
