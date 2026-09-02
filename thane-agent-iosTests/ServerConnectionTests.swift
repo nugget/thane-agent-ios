@@ -60,6 +60,24 @@ struct ServerConnectionTests {
         #expect(connection.transportCertificateCapturedAt == capturedAt)
     }
 
+    @Test("Refreshing identity for a different endpoint clears retained transport evidence")
+    func endpointChangeClearsCertificateEvidence() throws {
+        let firstEndpoint = try #require(URL(string: "https://first.example"))
+        let secondEndpoint = try #require(URL(string: "https://second.example"))
+        let connection = ServerConnection()
+        let chain = Self.certificateChain()
+        connection.handleConnectionEstablished()
+        connection.recordTransportCertificateChain(chain, endpoint: firstEndpoint)
+
+        connection.prepareForIdentityRefresh(from: firstEndpoint)
+        #expect(connection.transportCertificateChain == chain)
+
+        connection.prepareForIdentityRefresh(from: secondEndpoint)
+        #expect(connection.transportCertificateChain.isEmpty)
+        #expect(connection.transportCertificateCapturedAt == nil)
+        #expect(connection.transportCertificateEndpoint == nil)
+    }
+
     @Test("Disconnect retains the last connection error until success")
     func disconnectRetainsConnectionError() {
         let connection = ServerConnection()

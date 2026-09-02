@@ -20,6 +20,7 @@ final class ObservationPublisher {
     private var token: String?
     private var clientID = ""
     private var deliveryScope: ObservationDeliveryScope?
+    private var authorizationExpiresAt: Date?
     private var preparedScope: ObservationDeliveryScope?
     private var uploadTask: Task<Void, Never>?
     private var uploadID: UUID?
@@ -39,13 +40,15 @@ final class ObservationPublisher {
         baseURL: URL?,
         token: String?,
         clientID: String,
-        deliveryScope: ObservationDeliveryScope?
+        deliveryScope: ObservationDeliveryScope?,
+        authorizationExpiresAt: Date?
     ) {
         let trimmedToken = token?.trimmingCharacters(in: .whitespacesAndNewlines)
         let destinationChanged = self.baseURL != baseURL
             || self.token != trimmedToken
             || self.clientID != clientID
             || self.deliveryScope != deliveryScope
+            || self.authorizationExpiresAt != authorizationExpiresAt
         if destinationChanged {
             uploadTask?.cancel()
             uploadTask = nil
@@ -64,6 +67,7 @@ final class ObservationPublisher {
         self.token = trimmedToken
         self.clientID = clientID
         self.deliveryScope = deliveryScope
+        self.authorizationExpiresAt = authorizationExpiresAt
 
         guard destinationChanged else {
             flush()
@@ -100,6 +104,7 @@ final class ObservationPublisher {
     }
 
     func publishLocation(_ snapshot: LocationSnapshot) {
+        guard authorizePrivatePublish() else { return }
         guard let observedAt = ObservationCoding.date(from: snapshot.locationTimestamp) else {
             lastError = "A Core Location timestamp could not be encoded."
             return
@@ -114,6 +119,7 @@ final class ObservationPublisher {
     }
 
     func publishSystemContext(_ snapshot: SystemContextSnapshot) {
+        guard authorizePrivatePublish() else { return }
         guard let observedAt = ObservationCoding.date(from: snapshot.capturedAt) else {
             lastError = "A system-context timestamp could not be encoded."
             return
@@ -132,9 +138,11 @@ final class ObservationPublisher {
     }
 
     func flush() {
+        guard authorizePrivatePublish() else { return }
         guard let baseURL,
               let token,
               let deliveryScope,
+              let authorizationExpiresAt,
               preparedScope == deliveryScope,
               !token.isEmpty,
               !clientID.isEmpty else {
@@ -156,6 +164,7 @@ final class ObservationPublisher {
                 token: token,
                 clientID: clientID,
                 deliveryScope: deliveryScope,
+                authorizationExpiresAt: authorizationExpiresAt,
                 uploadID: uploadID
             )
         }
@@ -177,6 +186,7 @@ final class ObservationPublisher {
         token = nil
         clientID = ""
         deliveryScope = nil
+        authorizationExpiresAt = nil
         preparedScope = nil
         uploadTask = nil
         uploadID = nil
@@ -228,8 +238,16 @@ final class ObservationPublisher {
         token: String,
         clientID: String,
         deliveryScope: ObservationDeliveryScope,
+        authorizationExpiresAt: Date,
         uploadID: UUID
     ) async {
+        guard authorizationExpiresAt > Date(),
+              self.authorizationExpiresAt == authorizationExpiresAt else {
+            if self.authorizationExpiresAt == authorizationExpiresAt {
+                suspendExpiredPrivateDelivery()
+            }
+            return
+        }
         var completedBatch = false
         let backgroundTask = UIApplication.shared.beginBackgroundTask(
             withName: "Publish companion observations"
@@ -247,6 +265,13 @@ final class ObservationPublisher {
         do {
             let events = try await outbox.pending(for: deliveryScope)
             if !events.isEmpty {
+                guard authorizationExpiresAt > Date(),
+                      self.authorizationExpiresAt == authorizationExpiresAt else {
+                    if self.authorizationExpiresAt == authorizationExpiresAt {
+                        suspendExpiredPrivateDelivery()
+                    }
+                    return
+                }
                 let batch = ObservationBatch(
                     clientID: clientID,
                     clientName: "Thane for iOS",
@@ -310,6 +335,31 @@ final class ObservationPublisher {
     private func cancelUpload(id: UUID) {
         guard uploadID == id else { return }
         uploadTask?.cancel()
+    }
+
+    private func authorizePrivatePublish() -> Bool {
+        guard let authorizationExpiresAt else { return false }
+        guard authorizationExpiresAt > Date() else {
+            suspendExpiredPrivateDelivery()
+            return false
+        }
+        return baseURL != nil
+            && token?.isEmpty == false
+            && !clientID.isEmpty
+            && deliveryScope != nil
+    }
+
+    private func suspendExpiredPrivateDelivery() {
+        logger.notice("Suspended observation delivery because identity evidence expired")
+        uploadTask?.cancel()
+        uploadTask = nil
+        uploadID = nil
+        flushRequestedWhileBusy = false
+        isUploading = false
+        baseURL = nil
+        token = nil
+        clientID = ""
+        authorizationExpiresAt = nil
     }
 
     private func record(_ error: Error) {

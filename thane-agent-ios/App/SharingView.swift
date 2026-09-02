@@ -23,8 +23,7 @@ struct SharingView: View {
 
     private var recipientCard: some View {
         AppCard(title: "Recipient") {
-            if let evidence = appState.presentedIdentity,
-               evidence.instance.id == counterparty.id {
+            if let evidence = appState.presentedIdentity {
                 NavigationLink {
                     IdentityEvidenceView(evidence: evidence)
                 } label: {

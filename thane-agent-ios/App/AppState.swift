@@ -274,7 +274,7 @@ final class AppState {
 
         connectionSettings.isEnabled = true
         suspendPrivateDelivery()
-        identityService.refresh(from: url, token: token)
+        refreshIdentityEvidence(from: url, token: token)
     }
 
     func disconnect() {
@@ -296,7 +296,7 @@ final class AppState {
             return
         }
         suspendPrivateDelivery()
-        identityService.refresh(from: url, token: token)
+        refreshIdentityEvidence(from: url, token: token)
     }
 
     func pinPresentedIdentity() {
@@ -430,17 +430,20 @@ final class AppState {
                 baseURL: nil,
                 token: nil,
                 clientID: "",
-                deliveryScope: nil
+                deliveryScope: nil,
+                authorizationExpiresAt: nil
             )
             return
         }
         guard connectionSettings.isEnabled,
-              identityContinuity.permitsPrivateDelivery else {
+              identityContinuity.permitsPrivateDelivery,
+              let evidence = presentedIdentity else {
             observationPublisher.configure(
                 baseURL: nil,
                 token: nil,
                 clientID: "",
-                deliveryScope: observationDeliveryScope
+                deliveryScope: observationDeliveryScope,
+                authorizationExpiresAt: nil
             )
             return
         }
@@ -448,7 +451,10 @@ final class AppState {
             baseURL: connectionSettings.serverURL,
             token: tokenInput,
             clientID: connectionSettings.pairwiseClientID,
-            deliveryScope: observationDeliveryScope
+            deliveryScope: observationDeliveryScope,
+            authorizationExpiresAt: evidence.observedAt.addingTimeInterval(
+                IdentityContinuityState.maximumEvidenceAge
+            )
         )
     }
 
@@ -466,7 +472,7 @@ final class AppState {
         guard !token.isEmpty else { return }
 
         suspendPrivateDelivery()
-        identityService.refresh(from: url, token: token)
+        refreshIdentityEvidence(from: url, token: token)
     }
 
     private func reconcileIdentityBoundary() {
@@ -520,7 +526,8 @@ final class AppState {
             baseURL: nil,
             token: nil,
             clientID: "",
-            deliveryScope: observationDeliveryScope
+            deliveryScope: observationDeliveryScope,
+            authorizationExpiresAt: nil
         )
     }
 
@@ -538,6 +545,11 @@ final class AppState {
 
         cancelIdentityRefreshDeadline()
         suspendObservationDelivery()
+        refreshIdentityEvidence(from: url, token: token)
+    }
+
+    private func refreshIdentityEvidence(from url: URL, token: String) {
+        connection.prepareForIdentityRefresh(from: url)
         identityService.refresh(from: url, token: token)
     }
 

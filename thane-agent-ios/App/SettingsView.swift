@@ -394,8 +394,7 @@ private struct AgentSettingsView: View {
 
     @ViewBuilder
     private func identityDetail(for counterparty: ThaneCounterparty) -> some View {
-        if let evidence = appState.presentedIdentity,
-           evidence.instance.id == counterparty.id {
+        if let evidence = appState.presentedIdentity {
             IdentityEvidenceView(evidence: evidence)
         } else if let pin = appState.identityPinning.pin,
                   pin.identityID == counterparty.id {

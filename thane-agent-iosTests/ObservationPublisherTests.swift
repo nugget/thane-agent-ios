@@ -28,7 +28,8 @@ struct ObservationPublisherTests {
             baseURL: baseURL,
             token: "token",
             clientID: "client-id",
-            deliveryScope: deliveryScope
+            deliveryScope: deliveryScope,
+            authorizationExpiresAt: .distantFuture
         )
         try await waitUntil { uploader.callCount == 1 }
 
@@ -65,16 +66,24 @@ struct ObservationPublisherTests {
             baseURL: firstURL,
             token: "first-token",
             clientID: "client-id",
-            deliveryScope: deliveryScope
+            deliveryScope: deliveryScope,
+            authorizationExpiresAt: .distantFuture
         )
         try await waitUntil { uploader.callCount == 1 }
 
-        publisher.configure(baseURL: nil, token: nil, clientID: "", deliveryScope: nil)
+        publisher.configure(
+            baseURL: nil,
+            token: nil,
+            clientID: "",
+            deliveryScope: nil,
+            authorizationExpiresAt: nil
+        )
         publisher.configure(
             baseURL: secondURL,
             token: "second-token",
             clientID: "client-id",
-            deliveryScope: deliveryScope
+            deliveryScope: deliveryScope,
+            authorizationExpiresAt: .distantFuture
         )
 
         try await waitUntil { uploader.callCount == 2 }
@@ -104,7 +113,8 @@ struct ObservationPublisherTests {
             baseURL: nil,
             token: nil,
             clientID: "",
-            deliveryScope: deliveryScope
+            deliveryScope: deliveryScope,
+            authorizationExpiresAt: nil
         )
         publisher.withdraw(.location)
 
@@ -114,6 +124,35 @@ struct ObservationPublisherTests {
         #expect(pending.first?.kind == .location)
         #expect(pending.first?.status == .withdrawn)
         #expect(uploader.callCount == 0)
+    }
+
+    @Test("Expired identity authorization blocks event-driven private observations")
+    func expiredAuthorizationBlocksPrivateObservations() async throws {
+        let fixture = try PublisherFixture()
+        defer { fixture.cleanup() }
+        let uploader = SequencedObservationUploader()
+        let publisher = ObservationPublisher(
+            outbox: ObservationOutbox(fileURL: fixture.fileURL),
+            uploader: uploader
+        )
+        let deliveryScope = ObservationDeliveryScope(
+            connectionID: "connection-primary",
+            identityID: "thane:ed25519:SHA256:primary"
+        )
+        let baseURL = try #require(URL(string: "https://thane.example"))
+
+        publisher.configure(
+            baseURL: baseURL,
+            token: "token",
+            clientID: "client-id",
+            deliveryScope: deliveryScope,
+            authorizationExpiresAt: .distantPast
+        )
+        publisher.publishLocation(Self.locationSnapshot())
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(uploader.callCount == 0)
+        #expect(publisher.pendingCount == 0)
     }
 
     @Test("Forgetting drains pending mutations before deleting the queue")
@@ -135,7 +174,8 @@ struct ObservationPublisherTests {
             baseURL: nil,
             token: nil,
             clientID: "",
-            deliveryScope: deliveryScope
+            deliveryScope: deliveryScope,
+            authorizationExpiresAt: nil
         )
         publisher.withdraw(.location)
         publisher.withdraw(.systemContext)
@@ -158,6 +198,28 @@ struct ObservationPublisherTests {
             try await Task.sleep(for: .milliseconds(10))
         }
         Issue.record("Timed out waiting for asynchronous publisher state")
+    }
+
+    private static func locationSnapshot() -> LocationSnapshot {
+        LocationSnapshot(
+            capturedAt: "2026-09-01T12:00:00Z",
+            locationTimestamp: "2026-09-01T12:00:00Z",
+            latitude: 41.88,
+            longitude: -87.63,
+            altitudeMeters: nil,
+            ellipsoidalAltitudeMeters: nil,
+            horizontalAccuracyMeters: 5,
+            verticalAccuracyMeters: nil,
+            speedMetersPerSecond: nil,
+            speedAccuracyMetersPerSecond: nil,
+            courseDegrees: nil,
+            courseAccuracyDegrees: nil,
+            floor: nil,
+            authorization: "always",
+            accuracyAuthorization: "full",
+            simulatedBySoftware: false,
+            producedByAccessory: false
+        )
     }
 }
 

@@ -77,10 +77,7 @@ final class ServerConnection {
     private var nextID: Int64 = 1
 
     func connect(url: URL, token: String, clientID: String, clientName: String) {
-        if let transportCertificateEndpoint,
-           transportCertificateEndpoint != url {
-            clearRetainedTransportEvidence()
-        }
+        prepareForIdentityRefresh(from: url)
         let details = ConnectionDetails(
             url: url,
             token: token,
@@ -91,6 +88,14 @@ final class ServerConnection {
         intentionalDisconnect = false
         reconnectAttempt = 0
         beginConnection(details)
+    }
+
+    func prepareForIdentityRefresh(from endpoint: URL) {
+        guard transportCertificateCapturedAt != nil,
+              transportCertificateEndpoint != endpoint else {
+            return
+        }
+        clearRetainedTransportEvidence()
     }
 
     func disconnect() {
@@ -431,9 +436,12 @@ final class ServerConnection {
         beginConnection(activeDetails)
     }
 
-    func recordTransportCertificateChain(_ certificateChain: [TransportCertificate]) {
+    func recordTransportCertificateChain(
+        _ certificateChain: [TransportCertificate],
+        endpoint: URL? = nil
+    ) {
         if state == .connected {
-            publishTransportCertificateChain(certificateChain)
+            publishTransportCertificateChain(certificateChain, endpoint: endpoint)
         } else {
             pendingTransportCertificateChain = certificateChain
             hasPendingTransportCertificateObservation = true
@@ -445,10 +453,13 @@ final class ServerConnection {
         lastError = nil
     }
 
-    private func publishTransportCertificateChain(_ certificateChain: [TransportCertificate]) {
+    private func publishTransportCertificateChain(
+        _ certificateChain: [TransportCertificate],
+        endpoint: URL? = nil
+    ) {
         transportCertificateChain = certificateChain
         transportCertificateCapturedAt = Date()
-        transportCertificateEndpoint = activeDetails?.url
+        transportCertificateEndpoint = endpoint ?? activeDetails?.url
     }
 
     private func clearRetainedTransportEvidence() {

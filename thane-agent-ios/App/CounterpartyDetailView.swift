@@ -24,8 +24,7 @@ struct CounterpartyDetailView: View {
     @ViewBuilder
     private var identityCard: some View {
         AppCard(title: "Identity") {
-            if let evidence = appState.presentedIdentity,
-               evidence.instance.id == counterparty.id {
+            if let evidence = appState.presentedIdentity {
                 NavigationLink {
                     IdentityEvidenceView(evidence: evidence)
                 } label: {
