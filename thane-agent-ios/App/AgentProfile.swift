@@ -27,7 +27,7 @@ final class AgentProfile: Identifiable {
         id: String? = nil,
         connectionSettings: ConnectionSettings = ConnectionSettings(),
         sharingPreferences: SharingPreferences = SharingPreferences(),
-        observationPublisher: ObservationPublisher = ObservationPublisher(),
+        observationPublisher: ObservationPublisher? = nil,
         identityService: IdentityService = IdentityService(),
         identityPinning: IdentityPinningService? = nil,
         conversationStore: ConversationStore = ConversationStore()
@@ -39,7 +39,11 @@ final class AgentProfile: Identifiable {
             identityPinning.connectionID == connectionSettings.connectionID,
             "Identity storage must use the active connection profile scope."
         )
-        self.id = id ?? connectionSettings.connectionID
+        let profileID = id ?? connectionSettings.profileID
+        let observationPublisher = observationPublisher ?? ObservationPublisher(
+            outbox: ObservationOutbox(profileID: profileID)
+        )
+        self.id = profileID
         self.connectionSettings = connectionSettings
         self.sharingPreferences = sharingPreferences
         self.observationPublisher = observationPublisher

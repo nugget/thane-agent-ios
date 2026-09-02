@@ -7,6 +7,7 @@ final class ConnectionSettings {
     private nonisolated static let legacyClientIDKey = "connection.clientID"
     private nonisolated static let pairwiseClientIDKeyPrefix = "connection.pairwiseClientID."
     private nonisolated static let pairwiseCounterpartyKeyPrefix = "connection.pairwiseCounterpartyID."
+    private nonisolated static let profileIDKey = "connection.profileID"
     private nonisolated static let connectionIDKey = "connection.configurationID"
     private nonisolated static let enabledKey = "connection.enabled"
 
@@ -19,6 +20,7 @@ final class ConnectionSettings {
     var isEnabled: Bool {
         didSet { defaults.set(isEnabled, forKey: Self.enabledKey) }
     }
+    private(set) var profileID: String
     private(set) var connectionID: String
     private(set) var pairwiseClientID: String
     private(set) var pairwiseCounterpartyID: String?
@@ -42,6 +44,18 @@ final class ConnectionSettings {
             resolvedConnectionID = generated
         }
         connectionID = resolvedConnectionID
+        let resolvedProfileID: String
+        if let existing = defaults.string(forKey: Self.profileIDKey),
+           !existing.isEmpty {
+            resolvedProfileID = existing
+        } else {
+            // Existing single-profile installs already use the durable
+            // connection ID as their aggregate identity. Preserve that value
+            // so profile-scoped storage migrates without changing ownership.
+            resolvedProfileID = resolvedConnectionID
+            defaults.set(resolvedProfileID, forKey: Self.profileIDKey)
+        }
+        profileID = resolvedProfileID
 
         let scopedClientIDKey = Self.pairwiseClientIDKey(for: resolvedConnectionID)
         if let existing = defaults.string(forKey: scopedClientIDKey),

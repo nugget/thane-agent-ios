@@ -29,7 +29,7 @@ final class ObservationPublisher {
     private var flushRequestedWhileBusy = false
 
     init(
-        outbox: ObservationOutbox = ObservationOutbox(),
+        outbox: ObservationOutbox,
         uploader: any ObservationUploading = URLSessionObservationUploader()
     ) {
         self.outbox = outbox

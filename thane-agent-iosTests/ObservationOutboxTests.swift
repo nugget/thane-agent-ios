@@ -117,6 +117,68 @@ struct ObservationOutboxTests {
         }
     }
 
+    @Test("Profile-scoped queues cannot overwrite or delete one another")
+    func profileScopedQueuesAreIsolated() async throws {
+        let fixture = try OutboxFixture()
+        defer { fixture.cleanup() }
+        let firstScope = scope
+        let secondScope = ObservationDeliveryScope(
+            connectionID: "connection-secondary",
+            identityID: "thane:ed25519:SHA256:secondary"
+        )
+        let firstOutbox = ObservationOutbox(
+            profileID: "profile-primary",
+            storageDirectoryURL: fixture.directoryURL
+        )
+        let secondOutbox = ObservationOutbox(
+            profileID: "profile-secondary",
+            storageDirectoryURL: fixture.directoryURL
+        )
+        let firstEvent = try makeEvent(kind: .location, value: 1)
+        let secondEvent = try makeEvent(kind: .systemContext, value: 2)
+
+        try await firstOutbox.enqueue(firstEvent, for: firstScope)
+        try await secondOutbox.enqueue(secondEvent, for: secondScope)
+        try await firstOutbox.discardAll()
+
+        #expect(try await secondOutbox.pending(for: secondScope) == [secondEvent])
+        let firstURL = ObservationOutbox.profileFileURL(
+            profileID: "profile-primary",
+            storageDirectoryURL: fixture.directoryURL
+        )
+        let secondURL = ObservationOutbox.profileFileURL(
+            profileID: "profile-secondary",
+            storageDirectoryURL: fixture.directoryURL
+        )
+        #expect(firstURL != secondURL)
+        #expect(!FileManager.default.fileExists(atPath: firstURL.path))
+        #expect(FileManager.default.fileExists(atPath: secondURL.path))
+    }
+
+    @Test("The singleton queue migrates into the current stable profile")
+    func singletonQueueMigration() async throws {
+        let fixture = try OutboxFixture()
+        defer { fixture.cleanup() }
+        let legacyURL = fixture.directoryURL
+            .appendingPathComponent("observation-outbox.json")
+        let legacyOutbox = ObservationOutbox(fileURL: legacyURL)
+        let event = try makeEvent(kind: .location, value: 1)
+        try await legacyOutbox.enqueue(event, for: scope)
+
+        let migratedOutbox = ObservationOutbox(
+            profileID: "current-profile",
+            storageDirectoryURL: fixture.directoryURL
+        )
+        let migratedURL = ObservationOutbox.profileFileURL(
+            profileID: "current-profile",
+            storageDirectoryURL: fixture.directoryURL
+        )
+
+        #expect(try await migratedOutbox.pending(for: scope) == [event])
+        #expect(!FileManager.default.fileExists(atPath: legacyURL.path))
+        #expect(FileManager.default.fileExists(atPath: migratedURL.path))
+    }
+
     @Test("Legacy unscoped observations are discarded rather than reassigned")
     func legacyMigrationFailsClosed() async throws {
         let fixture = try OutboxFixture()
