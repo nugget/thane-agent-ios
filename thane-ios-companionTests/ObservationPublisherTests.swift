@@ -271,8 +271,9 @@ struct ObservationPublisherTests {
             outbox: ObservationOutbox(fileURL: fixture.fileURL),
             uploader: uploader
         )
+        let baseURL = URL(string: "https://thane.example")
         publisher.configure(
-            baseURL: try #require(URL(string: "https://thane.example")),
+            baseURL: baseURL,
             token: "token",
             clientID: "client-id",
             deliveryScope: ObservationDeliveryScope(
