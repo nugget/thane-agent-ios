@@ -537,7 +537,9 @@ final class AgentProfile: Identifiable {
                 token: tokenInput,
                 clientID: connectionSettings.pairwiseClientID,
                 deliveryScope: observationDeliveryScope,
-                authorizationExpiresAt: restored.observedAt.addingTimeInterval(
+                // From verifiedAt, stamped by this device, not from the
+                // server-supplied observedAt.
+                authorizationExpiresAt: restored.verifiedAt.addingTimeInterval(
                     IdentityContinuityState.maximumStoredEvidenceAge
                 )
             )
@@ -595,11 +597,24 @@ final class AgentProfile: Identifiable {
         }
         guard identityContinuity.permitsPrivateDelivery,
               let url = connectionSettings.serverURL else {
-            suspendPrivateDelivery()
+            connection.disconnect()
             if identityContinuity == .mismatch {
+                // A different identity is presenting itself. The stored
+                // snapshot still matches the pin, so falling back to it here
+                // would paper over exactly the thing worth refusing.
+                suspendObservationDelivery()
                 let name = identityPinning.pin?.nameAtPinning ?? "the pinned agent"
                 configurationError = "The presented identity does not match \(name)'s pin on this iPhone. Private delivery is blocked."
-            } else if identityContinuity == .stale {
+                return
+            }
+            // No live evidence (a fetch that failed, or a launch with no
+            // scene) or evidence merely gone stale. Re-derive the
+            // destination rather than clearing it: configureObservationPublisher
+            // falls back to the stored snapshot, which is what a background
+            // wake depends on and what an opportunistic refresh must not be
+            // able to destroy by failing.
+            configureObservationPublisher()
+            if identityContinuity == .stale {
                 configurationError = "Identity evidence is more than 15 minutes old. Refresh it before private delivery resumes."
             }
             return

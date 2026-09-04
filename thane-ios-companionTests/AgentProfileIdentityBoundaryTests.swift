@@ -497,17 +497,44 @@ struct AgentProfileIdentityBoundaryTests {
         #expect(fixture.uploader.callCount == 1)
     }
 
+    /// Drives the real `onSignificantLocation` callback with a fetch that
+    /// fails, which is the wake this whole change targets: no scene, no route,
+    /// stored evidence only.
+    ///
+    /// Calling the publisher directly would not exercise the callback or its
+    /// opportunistic refresh, and would stay green while the refresh's failure
+    /// path tore down the destination the snapshot had just authorised.
+    @Test("A wake whose identity refresh fails still delivers on stored evidence")
+    func failedOpportunisticRefreshPreservesDelivery() async throws {
+        let evidence = try IdentityTestFixture.evidence(observedAt: Date())
+        let fetcher = AppIdentityFetcher(evidence: evidence)
+        fetcher.result = .failure(AppIdentityTestError.expectedFailure)
+        let fixture = try AppIdentityFixture(
+            evidence: evidence,
+            pinnedEvidence: evidence,
+            storedEvidence: evidence,
+            identityService: IdentityService(fetcher: fetcher),
+            connectionEnabled: true
+        )
+        defer { fixture.cleanup() }
+
+        let callback = try #require(fixture.profile.locationService.onSignificantLocation)
+        callback(Self.backgroundFix())
+
+        try await waitUntil { fixture.uploader.callCount == 1 }
+        #expect(fixture.uploader.callCount == 1)
+    }
+
     /// The ceiling is load-bearing, not decorative.
     @Test("A relaunch with expired stored evidence records but does not deliver")
     func expiredStoredEvidenceBlocksBackgroundDelivery() async throws {
         let evidence = try IdentityTestFixture.evidence(observedAt: Date())
-        let expired = try IdentityTestFixture.evidence(
-            observedAt: Date().addingTimeInterval(-IdentityContinuityState.maximumStoredEvidenceAge - 60)
-        )
         let fixture = try AppIdentityFixture(
             evidence: evidence,
             pinnedEvidence: evidence,
-            storedEvidence: expired,
+            storedEvidence: evidence,
+            storedEvidenceVerifiedAt: Date()
+                .addingTimeInterval(-IdentityContinuityState.maximumStoredEvidenceAge - 60),
             connectionEnabled: true
         )
         defer { fixture.cleanup() }
@@ -540,6 +567,7 @@ private final class AppIdentityFixture {
         evidence: ThaneIdentityEvidence,
         pinnedEvidence: ThaneIdentityEvidence? = nil,
         storedEvidence: ThaneIdentityEvidence? = nil,
+        storedEvidenceVerifiedAt: Date? = nil,
         identityService: IdentityService? = nil,
         connectionEnabled: Bool = false,
         photoLibrary: (any PhotoLibraryReading)? = nil
@@ -570,7 +598,7 @@ private final class AppIdentityFixture {
         // process launched by Core Location sees: a pin and a stored snapshot
         // in the Keychain, and no live evidence anywhere.
         if let storedEvidence {
-            pinning.storeEvidence(storedEvidence)
+            pinning.storeEvidence(storedEvidence, verifiedAt: storedEvidenceVerifiedAt ?? Date())
         }
         settings.urlString = "https://thane.example"
         settings.isEnabled = connectionEnabled

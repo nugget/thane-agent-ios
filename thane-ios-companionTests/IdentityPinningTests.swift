@@ -239,7 +239,7 @@ struct IdentityPinningTests {
 
         let relaunched = IdentityPinningService(connectionID: connectionID, secureStore: store)
         let restored = try #require(relaunched.restoredEvidence())
-        #expect(restored.instance.id == evidence.instance.id)
+        #expect(restored.evidence.instance.id == evidence.instance.id)
         #expect(store.savedAccounts.contains("thane-identity-evidence.connection-one"))
     }
 
@@ -250,11 +250,14 @@ struct IdentityPinningTests {
     func storedEvidenceExpires() throws {
         let store = IdentityPinTestStore()
         let service = IdentityPinningService(connectionID: connectionID, secureStore: store)
-        let old = try IdentityTestFixture.evidence(
-            observedAt: Date().addingTimeInterval(-IdentityContinuityState.maximumStoredEvidenceAge - 60)
-        )
+        let old = try IdentityTestFixture.evidence(observedAt: Date())
         try service.pin(old)
-        service.storeEvidence(old)
+        // Aged by when this device verified it, which is the only clock the
+        // ceiling is allowed to trust.
+        service.storeEvidence(
+            old,
+            verifiedAt: Date().addingTimeInterval(-IdentityContinuityState.maximumStoredEvidenceAge - 60)
+        )
 
         #expect(service.restoredEvidence() == nil)
     }
@@ -262,6 +265,28 @@ struct IdentityPinningTests {
     /// Continuity is *not* relaxed. Only recency is. A snapshot that does not
     /// match the pin authorises nothing, so this phone cannot be pointed at a
     /// different Thane by anything held on the device.
+    /// The ceiling has to be measured by a clock this device controls. If it
+    /// ran from the server-supplied observedAt, a future timestamp would
+    /// produce a negative age, pass any bound, and authorise delivery until
+    /// that timestamp plus the ceiling.
+    @Test("A future server timestamp cannot extend the ceiling")
+    func futureObservedAtCannotExtendTheCeiling() throws {
+        let store = IdentityPinTestStore()
+        let service = IdentityPinningService(connectionID: connectionID, secureStore: store)
+        let farFuture = try IdentityTestFixture.evidence(
+            observedAt: Date().addingTimeInterval(365 * 24 * 60 * 60)
+        )
+        try service.pin(farFuture)
+
+        // Verified long ago by this device, whatever the server claims.
+        service.storeEvidence(
+            farFuture,
+            verifiedAt: Date().addingTimeInterval(-IdentityContinuityState.maximumStoredEvidenceAge - 60)
+        )
+
+        #expect(service.restoredEvidence() == nil)
+    }
+
     @Test("Stored evidence that does not match the pin is refused")
     func storedEvidenceMustMatchPin() throws {
         let store = IdentityPinTestStore()

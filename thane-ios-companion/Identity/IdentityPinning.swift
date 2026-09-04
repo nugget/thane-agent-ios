@@ -45,6 +45,19 @@ private extension PublicIdentityMaterial {
     }
 }
 
+/// An identity snapshot together with the local time this device verified
+/// it. The pairing matters: the ceiling is measured from `verifiedAt`, which
+/// this device stamps, never from the server-supplied `observedAt`.
+nonisolated struct StoredIdentityEvidence: Codable, Equatable, Sendable {
+    let evidence: ThaneIdentityEvidence
+    let verifiedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case evidence
+        case verifiedAt = "verified_at"
+    }
+}
+
 nonisolated enum IdentityContinuityState: Equatable, Sendable {
     static let maximumEvidenceAge: TimeInterval = 15 * 60
 
@@ -157,10 +170,10 @@ final class IdentityPinningService {
     func forget() throws {
         try secureStore.delete(account: securityScope.identityPinAccount)
         try secureStore.delete(account: ConnectionSecurityScope.legacyIdentityPinAccount)
-        // The stored evidence outlives the pin unless it is removed here,
-        // and evidence without a pin could authorise nothing — but leaving
-        // a forgotten agent's identity on the device is its own problem.
-        try? secureStore.delete(account: securityScope.identityEvidenceAccount)
+        // Propagated, not swallowed: reporting a successful forget while the
+        // snapshot survives in the Keychain is exactly the failure the
+        // operator would never find out about.
+        try secureStore.delete(account: securityScope.identityEvidenceAccount)
         pin = nil
         blockingError = nil
         lastError = nil
@@ -197,9 +210,16 @@ final class IdentityPinningService {
     /// Persists the evidence behind the same accessibility class as the
     /// token: readable after first unlock, which is the window a background
     /// wake actually runs in, and never synced off this device.
-    func storeEvidence(_ evidence: ThaneIdentityEvidence) {
+    ///
+    /// `verifiedAt` is stamped here, locally, and is what the ceiling runs
+    /// from. `evidence.observedAt` is a value the server chose: a future one
+    /// would produce a negative age, pass any age check, and authorise
+    /// delivery until that timestamp plus the ceiling. The bound has to come
+    /// from a clock this device controls.
+    func storeEvidence(_ evidence: ThaneIdentityEvidence, verifiedAt: Date = Date()) {
         do {
-            let data = try JSONEncoder().encode(evidence)
+            let record = StoredIdentityEvidence(evidence: evidence, verifiedAt: verifiedAt)
+            let data = try JSONEncoder().encode(record)
             try secureStore.save(
                 String(decoding: data, as: UTF8.self),
                 account: securityScope.identityEvidenceAccount
@@ -212,19 +232,20 @@ final class IdentityPinningService {
         }
     }
 
-    /// The stored snapshot, if it still matches the pin and is inside the
-    /// ceiling. Returns nil rather than throwing: an unreadable or expired
-    /// snapshot is simply an absent one.
-    func restoredEvidence(now: Date = Date()) -> ThaneIdentityEvidence? {
+    /// The stored snapshot, if it still matches the pin and was verified
+    /// inside the ceiling. Returns nil rather than throwing: an unreadable or
+    /// expired snapshot is simply an absent one.
+    func restoredEvidence(now: Date = Date()) -> StoredIdentityEvidence? {
         guard let pin else { return nil }
         guard let raw = try? secureStore.load(account: securityScope.identityEvidenceAccount),
-              let evidence = try? JSONDecoder().decode(ThaneIdentityEvidence.self, from: Data(raw.utf8)),
-              pin.matches(evidence),
-              now.timeIntervalSince(evidence.observedAt) <= IdentityContinuityState.maximumStoredEvidenceAge
+              let record = try? JSONDecoder().decode(StoredIdentityEvidence.self, from: Data(raw.utf8)),
+              pin.matches(record.evidence),
+              record.verifiedAt <= now,
+              now.timeIntervalSince(record.verifiedAt) <= IdentityContinuityState.maximumStoredEvidenceAge
         else {
             return nil
         }
-        return evidence
+        return record
     }
 
     /// Removes the snapshot. Called wherever the pin itself is cleared, so a
