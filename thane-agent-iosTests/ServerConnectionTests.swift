@@ -127,6 +127,7 @@ struct ServerConnectionTests {
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let settings = ConnectionSettings(
+            profileID: "profile-one",
             defaults: defaults,
             credentialStore: AuthenticationCredentialStore()
         )

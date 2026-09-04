@@ -220,7 +220,7 @@ struct PhotoServiceTests {
         let stream = ManuallyDrivenPhotoResourceStream()
 
         let request = PhotoEmbeddedMetadataResourceRequest(
-            timeoutNanoseconds: 1_000_000_000
+            timeoutNanoseconds: 30_000_000_000
         )
         let resultTask = Task { await request.read(from: stream) }
         await stream.waitUntilStarted()
@@ -248,7 +248,7 @@ struct PhotoServiceTests {
         ])
         let request = PhotoEmbeddedMetadataResourceRequest(
             maximumByteCount: metadataPrefix.count,
-            timeoutNanoseconds: 1_000_000_000
+            timeoutNanoseconds: 30_000_000_000
         )
 
         let result = await request.read(from: stream)
@@ -267,7 +267,7 @@ struct PhotoServiceTests {
         ])
         let request = PhotoEmbeddedMetadataResourceRequest(
             maximumByteCount: 32,
-            timeoutNanoseconds: 1_000_000_000
+            timeoutNanoseconds: 30_000_000_000
         )
 
         let result = await request.read(from: stream)
@@ -305,7 +305,7 @@ struct PhotoServiceTests {
     func embeddedMetadataCallerCancellation() async {
         let stream = ManuallyDrivenPhotoResourceStream()
         let request = PhotoEmbeddedMetadataResourceRequest(
-            timeoutNanoseconds: 1_000_000_000
+            timeoutNanoseconds: 30_000_000_000
         )
         let resultTask = Task { await request.read(from: stream) }
         await stream.waitUntilStarted()

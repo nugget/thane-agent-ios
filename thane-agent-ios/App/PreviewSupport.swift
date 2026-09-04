@@ -111,6 +111,7 @@ enum PreviewFixtures {
         let defaults = isolatedDefaults()
         let credentialStore = PreviewCredentialStore()
         let connectionSettings = ConnectionSettings(
+            profileID: "preview-profile",
             defaults: defaults,
             credentialStore: credentialStore
         )

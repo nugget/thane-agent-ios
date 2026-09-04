@@ -10,83 +10,222 @@ struct AppStateTests {
         let fixture = try AppStateFixture()
         defer { fixture.cleanup() }
 
-        let preferences = AppPreferences(defaults: fixture.appDefaults)
-        let appState = AppState(
-            appPreferences: preferences,
-            profiles: [fixture.configuredProfile, fixture.draftProfile],
-            activeProfileID: fixture.draftProfile.id
+        let configured = fixture.makeProfile("profile-one")
+        let draft = fixture.makeProfile("profile-two")
+        configured.connectionSettings.urlString = "https://first.example"
+
+        let preferences = AppPreferences(defaults: fixture.defaults)
+        let appState = fixture.appState(
+            profiles: [configured, draft],
+            activeProfileID: draft.id,
+            appPreferences: preferences
         )
 
         #expect(appState.appPreferences === preferences)
-        #expect(appState.profiles.map(\.id) == [
-            fixture.configuredProfile.id,
-            fixture.draftProfile.id,
-        ])
-        #expect(appState.activeProfile === fixture.draftProfile)
+        #expect(appState.profiles.map(\.id) == ["profile-one", "profile-two"])
+        #expect(appState.activeProfile === draft)
         #expect(appState.configuredProfiles.count == 1)
-        #expect(appState.configuredProfiles.first === fixture.configuredProfile)
+        #expect(appState.configuredProfiles.first === configured)
 
-        fixture.draftProfile.connectionSettings.urlString = "https://second.example"
-
+        draft.connectionSettings.urlString = "https://second.example"
         #expect(appState.configuredProfiles.count == 2)
+    }
+
+    @Test("A fresh installation resolves exactly one profile from the roster")
+    func freshInstallationResolvesOneProfile() throws {
+        let fixture = try AppStateFixture()
+        defer { fixture.cleanup() }
+
+        let appState = fixture.appState()
+
+        #expect(appState.profiles.count == 1)
+        #expect(appState.activeProfile === appState.profiles[0])
+        #expect(
+            fixture.defaults.array(forKey: AgentProfileRoster.rosterKey) as? [String]
+                == [appState.activeProfile.id]
+        )
+    }
+
+    @Test("Adding a profile mints an independent storage scope in the same suite")
+    func addingProfileMintsIndependentScope() throws {
+        let fixture = try AppStateFixture()
+        defer { fixture.cleanup() }
+        let appState = fixture.appState()
+        let first = appState.activeProfile
+
+        let second = appState.addProfile()
+
+        #expect(appState.profiles.count == 2)
+        #expect(second.id != first.id)
+        #expect(second.connectionSettings.connectionID != first.connectionSettings.connectionID)
+        #expect(second.connectionSettings.pairwiseClientID != first.connectionSettings.pairwiseClientID)
+        #expect(
+            second.connectionSettings.securityScope.tokenAccount
+                != first.connectionSettings.securityScope.tokenAccount
+        )
+        #expect(
+            fixture.defaults.array(forKey: AgentProfileRoster.rosterKey) as? [String]
+                == [first.id, second.id]
+        )
+
+        // Independence must survive a relaunch against the same suite.
+        let relaunched = fixture.appState()
+        #expect(relaunched.profiles.map(\.id) == [first.id, second.id])
+    }
+
+    @Test("Removing a profile erases its scoped state and reselects an active profile")
+    func removingProfileErasesScopedState() async throws {
+        let fixture = try AppStateFixture()
+        defer { fixture.cleanup() }
+        let appState = fixture.appState()
+        let first = appState.activeProfile
+        let second = appState.addProfile()
+        second.connectionSettings.urlString = "https://second.example"
+        appState.selectProfile(second)
+        let removedID = second.id
+
+        let didRemove = await appState.removeProfile(second)
+
+        #expect(didRemove)
+        #expect(appState.profiles.map(\.id) == [first.id])
+        #expect(appState.activeProfile === first)
+        #expect(
+            fixture.defaults.array(forKey: AgentProfileRoster.rosterKey) as? [String] == [first.id]
+        )
+        #expect(fixture.defaults.object(forKey: "agent.\(removedID).baseURL") == nil)
+        #expect(fixture.defaults.object(forKey: "agent.\(removedID).configurationID") == nil)
+        #expect(fixture.defaults.object(forKey: "agent.\(removedID).profileID") == nil)
+    }
+
+    @Test("Concurrent removals cannot empty the profile list")
+    func concurrentRemovalsCannotEmptyProfiles() async throws {
+        let fixture = try AppStateFixture()
+        defer { fixture.cleanup() }
+        let appState = fixture.appState()
+        let first = appState.activeProfile
+        let second = appState.addProfile()
+
+        // Teardown suspends and @MainActor is reentrant, so both calls used to
+        // pass a guard evaluated against the pre-removal count and then both
+        // mutate — emptying the roster and trapping on profiles[0].
+        async let removingFirst = appState.removeProfile(first)
+        async let removingSecond = appState.removeProfile(second)
+        let outcomes = await [removingFirst, removingSecond]
+
+        #expect(outcomes.filter { $0 }.count == 1)
+        #expect(appState.profiles.count == 1)
+        #expect(appState.profiles.contains { $0 === appState.activeProfile })
+        #expect(
+            (fixture.defaults.array(forKey: AgentProfileRoster.rosterKey) as? [String])?.count == 1
+        )
+    }
+
+    @Test("A profile being removed is never promoted to active")
+    func removalNeverPromotesADyingProfile() async throws {
+        let fixture = try AppStateFixture()
+        defer { fixture.cleanup() }
+        let appState = fixture.appState()
+        let first = appState.activeProfile
+        let second = appState.addProfile()
+        let third = appState.addProfile()
+        appState.selectProfile(first)
+
+        // With three profiles, the survivor at index 0 may itself be mid-removal.
+        async let removingFirst = appState.removeProfile(first)
+        async let removingSecond = appState.removeProfile(second)
+        _ = await [removingFirst, removingSecond]
+
+        #expect(appState.profiles.contains { $0 === appState.activeProfile })
+        #expect(appState.activeProfile !== first)
+        #expect(appState.profiles.contains { $0 === third })
+    }
+
+    @Test("Removing the only profile is refused before any teardown begins")
+    func removingLastProfileIsRefused() async throws {
+        let fixture = try AppStateFixture()
+        defer { fixture.cleanup() }
+        let appState = fixture.appState()
+        let only = appState.activeProfile
+        only.connectionSettings.urlString = "https://only.example"
+        let connectionID = only.connectionSettings.connectionID
+
+        let didRemove = await appState.removeProfile(only)
+
+        // Refusing must leave the profile completely intact — an earlier
+        // ordering tore the connection down first and then reported refusal,
+        // which erased the token, pin, inbox, and outbox anyway.
+        #expect(didRemove == false)
+        #expect(appState.profiles.count == 1)
+        #expect(only.connectionSettings.urlString == "https://only.example")
+        #expect(only.connectionSettings.connectionID == connectionID)
+        #expect(
+            fixture.defaults.string(forKey: "agent.\(only.id).configurationID") == connectionID
+        )
     }
 }
 
 @MainActor
 private final class AppStateFixture {
-    let appDefaults: UserDefaults
-    let configuredProfile: AgentProfile
-    let draftProfile: AgentProfile
+    let defaults: UserDefaults
 
-    private let suites: [String]
+    private let suite: String
+    private let credentials = AppStateCredentialStore()
 
     init() throws {
-        let appSuite = "AppStateTests.app.\(UUID().uuidString)"
-        let firstSuite = "AppStateTests.first.\(UUID().uuidString)"
-        let secondSuite = "AppStateTests.second.\(UUID().uuidString)"
-        suites = [appSuite, firstSuite, secondSuite]
-
-        appDefaults = try #require(UserDefaults(suiteName: appSuite))
-        let firstDefaults = try #require(UserDefaults(suiteName: firstSuite))
-        let secondDefaults = try #require(UserDefaults(suiteName: secondSuite))
-
-        configuredProfile = Self.makeProfile(defaults: firstDefaults)
-        configuredProfile.connectionSettings.urlString = "https://first.example"
-        draftProfile = Self.makeProfile(defaults: secondDefaults)
+        suite = "AppStateTests.\(UUID().uuidString)"
+        defaults = try #require(UserDefaults(suiteName: suite))
     }
 
-    func cleanup() {
-        configuredProfile.disconnect()
-        draftProfile.disconnect()
-        for suite in suites {
-            UserDefaults.standard.removePersistentDomain(forName: suite)
-        }
-    }
-
-    private static func makeProfile(defaults: UserDefaults) -> AgentProfile {
-        let credentialStore = AppStateCredentialStore()
+    /// Builds profiles wired to the fixture's suite and a fake Keychain, using
+    /// the same profile-ID plumbing `AgentProfile.make` uses in production.
+    func makeProfile(_ profileID: String) -> AgentProfile {
         let settings = ConnectionSettings(
+            profileID: profileID,
             defaults: defaults,
-            credentialStore: credentialStore
+            credentialStore: credentials
         )
         return AgentProfile(
             connectionSettings: settings,
             sharingPreferences: SharingPreferences(defaults: defaults),
             identityPinning: IdentityPinningService(
                 connectionID: settings.connectionID,
-                secureStore: credentialStore
+                secureStore: credentials
             )
         )
+    }
+
+    func appState(
+        profiles: [AgentProfile]? = nil,
+        activeProfileID: String? = nil,
+        appPreferences: AppPreferences? = nil
+    ) -> AppState {
+        AppState(
+            appPreferences: appPreferences ?? AppPreferences(defaults: defaults),
+            profiles: profiles,
+            activeProfileID: activeProfileID,
+            defaults: defaults,
+            makeProfile: { [makeProfile] profileID, _ in makeProfile(profileID) }
+        )
+    }
+
+    func cleanup() {
+        UserDefaults.standard.removePersistentDomain(forName: suite)
     }
 }
 
 @MainActor
 private final class AppStateCredentialStore: CredentialStoring {
-    func save(_ value: String, account: String) {}
+    private var values: [String: String] = [:]
 
-    func load(account: String) -> String? {
-        nil
+    func save(_ value: String, account: String) {
+        values[account] = value
     }
 
-    func delete(account: String) {}
+    func load(account: String) -> String? {
+        values[account]
+    }
+
+    func delete(account: String) {
+        values[account] = nil
+    }
 }
