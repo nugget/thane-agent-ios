@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`thane-agent-ios` is the sandboxed iOS companion for
+`thane-ios-companion` is the sandboxed iOS companion for
 [Thane](https://github.com/nugget/thane-ai-agent). It connects to a Thane
 instance using the authenticated realtime platform-provider protocol and
 exposes operator-approved Apple platform data through public iOS APIs.
@@ -33,7 +33,7 @@ just ci
 - Do not imply continuous background availability. The realtime provider is
   available while the app is active; add background modes only for their
   documented purpose and with a concrete product requirement.
-- Use `os.Logger` with subsystem `info.nugget.thane-agent-ios`. No `print()`.
+- Use `os.Logger` with subsystem `info.nugget.thane-ios-companion`. No `print()`.
 - Add usage descriptions, privacy-manifest declarations, UI disclosure, and
   tests in the same change as each new data source.
 - Keep App Store Review Guidelines and least-privilege entitlement use in the
