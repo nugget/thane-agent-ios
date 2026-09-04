@@ -57,7 +57,8 @@ final class AgentProfile: Identifiable {
         // can address a different SHA-256 storage directory than another.
         let profileID = connectionSettings.profileID
         let observationPublisher = observationPublisher ?? ObservationPublisher(
-            outbox: ObservationOutbox(profileID: profileID)
+            outbox: ObservationOutbox(profileID: profileID),
+            uploader: URLSessionObservationUploader(profileID: profileID)
         )
         self.id = profileID
         self.connectionSettings = connectionSettings

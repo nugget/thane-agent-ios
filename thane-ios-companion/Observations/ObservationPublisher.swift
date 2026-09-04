@@ -28,9 +28,12 @@ final class ObservationPublisher {
     private var enqueueTasks: [UUID: Task<Void, Never>] = [:]
     private var flushRequestedWhileBusy = false
 
+    /// The uploader is required rather than defaulted: it owns a background
+    /// URLSession whose identifier must be scoped to the same profile as the
+    /// outbox, and a default here could only guess at that.
     init(
         outbox: ObservationOutbox,
-        uploader: any ObservationUploading = URLSessionObservationUploader()
+        uploader: any ObservationUploading
     ) {
         self.outbox = outbox
         self.uploader = uploader
@@ -103,8 +106,16 @@ final class ObservationPublisher {
         }
     }
 
+    /// Records a fix. Authorization is deliberately *not* checked here.
+    ///
+    /// The gate belongs at delivery, not capture. iOS grants this app a wake
+    /// on significant location change and nothing else; if capture required
+    /// live identity evidence, a wake arriving outside the evidence window
+    /// discarded the fix and wrote nothing — no queue entry, no error, no
+    /// signal, and the same outcome on every subsequent wake. The outbox is
+    /// durable and file-protected precisely so a fix can outlive the
+    /// conditions needed to send it. `withdraw` has always worked this way.
     func publishLocation(_ snapshot: LocationSnapshot) {
-        guard authorizePrivatePublish() else { return }
         guard let observedAt = ObservationCoding.date(from: snapshot.locationTimestamp) else {
             lastError = "A Core Location timestamp could not be encoded."
             return
@@ -118,8 +129,9 @@ final class ObservationPublisher {
         }
     }
 
+    /// Records a system-context snapshot. Ungated at capture for the same
+    /// reason as `publishLocation`.
     func publishSystemContext(_ snapshot: SystemContextSnapshot) {
-        guard authorizePrivatePublish() else { return }
         guard let observedAt = ObservationCoding.date(from: snapshot.capturedAt) else {
             lastError = "A system-context timestamp could not be encoded."
             return
@@ -248,19 +260,13 @@ final class ObservationPublisher {
             }
             return
         }
+        // No `beginBackgroundTask` assertion here any more. An assertion is a
+        // stay of execution: when it expired its handler cancelled the upload,
+        // so the transfer died with the process and the batch was lost until
+        // some later foreground launch. The uploader now hands the transfer to
+        // a background URLSession, which continues out of process and relaunches
+        // the app on completion, so there is no runway to ask for.
         var completedBatch = false
-        let backgroundTask = UIApplication.shared.beginBackgroundTask(
-            withName: "Publish companion observations"
-        ) { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.cancelUpload(id: uploadID)
-            }
-        }
-        defer {
-            if backgroundTask != .invalid {
-                UIApplication.shared.endBackgroundTask(backgroundTask)
-            }
-        }
 
         do {
             let events = try await outbox.pending(for: deliveryScope)
@@ -330,11 +336,6 @@ final class ObservationPublisher {
                 record(error)
             }
         }
-    }
-
-    private func cancelUpload(id: UUID) {
-        guard uploadID == id else { return }
-        uploadTask?.cancel()
     }
 
     private func authorizePrivatePublish() -> Bool {
