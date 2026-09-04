@@ -478,7 +478,11 @@ private final class AppIdentityFixture {
             ConnectionSecurityScope.legacyTokenAccount: "secret",
         ])
         self.secureStore = secureStore
-        let settings = ConnectionSettings(defaults: defaults, credentialStore: secureStore)
+        let settings = ConnectionSettings(
+            profileID: "profile-one",
+            defaults: defaults,
+            credentialStore: secureStore
+        )
         let pinning = IdentityPinningService(
             connectionID: settings.connectionID,
             secureStore: secureStore

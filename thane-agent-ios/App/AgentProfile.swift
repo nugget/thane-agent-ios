@@ -25,9 +25,19 @@ final class AgentProfile: Identifiable {
     private let systemContextService: SystemContextService
     private var identityRefreshDeadlineTask: Task<Void, Never>?
 
+    /// Builds a profile whose every collaborator is wired to the same storage
+    /// scope. Prefer this over the designated initializer: it is the only place
+    /// that guarantees the profile ID, the preferences suite, and the durable
+    /// storage locations agree.
+    static func make(profileID: String, defaults: UserDefaults) -> AgentProfile {
+        AgentProfile(
+            connectionSettings: ConnectionSettings(profileID: profileID, defaults: defaults),
+            sharingPreferences: SharingPreferences(defaults: defaults)
+        )
+    }
+
     init(
-        id: String? = nil,
-        connectionSettings: ConnectionSettings = ConnectionSettings(),
+        connectionSettings: ConnectionSettings,
         sharingPreferences: SharingPreferences = SharingPreferences(),
         observationPublisher: ObservationPublisher? = nil,
         identityService: IdentityService = IdentityService(),
@@ -43,7 +53,9 @@ final class AgentProfile: Identifiable {
             identityPinning.connectionID == connectionSettings.connectionID,
             "Identity storage must use the active connection profile scope."
         )
-        let profileID = id ?? connectionSettings.profileID
+        // Sourced unconditionally from the settings object so no collaborator
+        // can address a different SHA-256 storage directory than another.
+        let profileID = connectionSettings.profileID
         let observationPublisher = observationPublisher ?? ObservationPublisher(
             outbox: ObservationOutbox(profileID: profileID)
         )
