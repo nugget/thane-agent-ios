@@ -126,7 +126,13 @@ struct ObservationPublisherTests {
         #expect(uploader.callCount == 0)
     }
 
-    @Test("Expired identity authorization blocks event-driven private observations")
+    /// The gate moved from capture to delivery. Expired evidence must still
+    /// stop the upload — that is the security property — but it must no longer
+    /// destroy the observation on the way in. iOS gives this app a wake on
+    /// significant location change and nothing else; discarding at capture
+    /// meant a wake outside the 15-minute evidence window wrote nothing at
+    /// all, forever, with no error and no signal.
+    @Test("Expired identity authorization blocks delivery without discarding the fix")
     func expiredAuthorizationBlocksPrivateObservations() async throws {
         let fixture = try PublisherFixture()
         defer { fixture.cleanup() }
@@ -149,10 +155,62 @@ struct ObservationPublisherTests {
             authorizationExpiresAt: .distantPast
         )
         publisher.publishLocation(Self.locationSnapshot())
-        try await Task.sleep(for: .milliseconds(50))
 
+        // waitUntil, not a fixed sleep: the enqueue is asynchronous, and a
+        // sleep short enough to miss it made the old assertion pass for the
+        // wrong reason.
+        try await waitUntil { publisher.pendingCount == 1 }
+        let pending = try await ObservationOutbox(fileURL: fixture.fileURL)
+            .pending(for: deliveryScope)
+        #expect(pending.count == 1)
+        #expect(pending.first?.kind == .location)
+        #expect(pending.first?.status == .available)
         #expect(uploader.callCount == 0)
-        #expect(publisher.pendingCount == 0)
+    }
+
+    /// The other half of moving the gate: a fix captured while unauthorized
+    /// is not merely retained, it is delivered once evidence returns. This is
+    /// the path a backgrounded phone actually takes — wake, record, and send
+    /// on the next activation.
+    @Test("A fix captured while unauthorized delivers once authorization returns")
+    func queuedFixDeliversAfterReauthorization() async throws {
+        let fixture = try PublisherFixture()
+        defer { fixture.cleanup() }
+        let outbox = ObservationOutbox(fileURL: fixture.fileURL)
+        // Not SequencedObservationUploader: that one suspends its first call
+        // on a continuation so a test can fail it, which would hang here.
+        let uploader = AcceptingObservationUploader()
+        let publisher = ObservationPublisher(outbox: outbox, uploader: uploader)
+        let deliveryScope = ObservationDeliveryScope(
+            connectionID: "connection-primary",
+            identityID: "thane:ed25519:SHA256:primary"
+        )
+        let baseURL = try #require(URL(string: "https://thane.example"))
+
+        publisher.configure(
+            baseURL: baseURL,
+            token: "token",
+            clientID: "client-id",
+            deliveryScope: deliveryScope,
+            authorizationExpiresAt: .distantPast
+        )
+        publisher.publishLocation(Self.locationSnapshot())
+        try await waitUntil { publisher.pendingCount == 1 }
+        #expect(uploader.callCount == 0)
+
+        publisher.configure(
+            baseURL: baseURL,
+            token: "token",
+            clientID: "client-id",
+            deliveryScope: deliveryScope,
+            authorizationExpiresAt: .distantFuture
+        )
+
+        // No explicit flush: reconfiguring rebinds the outbox and flushes on
+        // its own, which is what a foreground activation actually does.
+        try await waitUntil { uploader.callCount == 1 }
+        try await waitUntil { publisher.pendingCount == 0 && !publisher.isUploading }
+        #expect(try await outbox.pending(for: deliveryScope).isEmpty)
     }
 
     @Test("Forgetting drains pending mutations before deleting the queue")
@@ -198,6 +256,36 @@ struct ObservationPublisherTests {
             try await Task.sleep(for: .milliseconds(10))
         }
         Issue.record("Timed out waiting for asynchronous publisher state")
+    }
+
+    /// A background transfer runs out of process and outlives the Task that
+    /// started it, so forgetting an agent has to reclaim it explicitly. Without
+    /// this, nsurlsessiond keeps POSTing a batch whose credentials and outbox
+    /// entry have already been erased.
+    @Test("Forgetting reclaims out-of-process transfers before erasing the queue")
+    func forgettingReclaimsTransfers() async throws {
+        let fixture = try PublisherFixture()
+        defer { fixture.cleanup() }
+        let uploader = ReclaimingObservationUploader()
+        let publisher = ObservationPublisher(
+            outbox: ObservationOutbox(fileURL: fixture.fileURL),
+            uploader: uploader
+        )
+        let baseURL = URL(string: "https://thane.example")
+        publisher.configure(
+            baseURL: baseURL,
+            token: "token",
+            clientID: "client-id",
+            deliveryScope: ObservationDeliveryScope(
+                connectionID: "connection-primary",
+                identityID: "thane:ed25519:SHA256:primary"
+            ),
+            authorizationExpiresAt: .distantFuture
+        )
+
+        try await publisher.discardAllPending()
+
+        #expect(uploader.cancelAllCallCount == 1)
     }
 
     private static func locationSnapshot() -> LocationSnapshot {
@@ -247,6 +335,40 @@ private final class SequencedObservationUploader: ObservationUploading {
     func failFirstUpload() {
         firstContinuation?.resume(throwing: PublisherTestError.expectedFailure)
         firstContinuation = nil
+    }
+}
+
+/// Records whether destructive teardown reclaimed its transfers.
+@MainActor
+private final class ReclaimingObservationUploader: ObservationUploading {
+    private(set) var cancelAllCallCount = 0
+
+    func upload(
+        _ batch: ObservationBatch,
+        to baseURL: URL,
+        token: String
+    ) async throws -> ObservationIngestResult {
+        ObservationIngestResult(stored: batch.events.count, ignored: 0, receivedAt: Date())
+    }
+
+    func cancelAllTransfers() async {
+        cancelAllCallCount += 1
+    }
+}
+
+/// Accepts every batch immediately. The counterpart to
+/// `SequencedObservationUploader`, which holds its first call open.
+@MainActor
+private final class AcceptingObservationUploader: ObservationUploading {
+    private(set) var callCount = 0
+
+    func upload(
+        _ batch: ObservationBatch,
+        to baseURL: URL,
+        token: String
+    ) async throws -> ObservationIngestResult {
+        callCount += 1
+        return ObservationIngestResult(stored: batch.events.count, ignored: 0, receivedAt: Date())
     }
 }
 

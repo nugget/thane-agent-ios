@@ -77,6 +77,59 @@ struct ObservationTransportTests {
         }
     }
 
+    @Test("Background session identifiers are scoped per profile")
+    func sessionIdentifierIsProfileScoped() {
+        let first = URLSessionObservationUploader.sessionIdentifier(profileID: "profile-a")
+        let second = URLSessionObservationUploader.sessionIdentifier(profileID: "profile-b")
+
+        #expect(first != second)
+        #expect(first.hasPrefix("info.nugget.thane-ios-companion.observations."))
+        #expect(first.hasSuffix("profile-a"))
+    }
+
+    @Test("The upload body is written to a file the session can read after this process")
+    func bodyIsWrittenToFile() throws {
+        let batch = try makeBatch()
+        let body = try ObservationCoding.encoder().encode(batch)
+        let fileURL = try URLSessionObservationUploader.writeBody(body)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        // A background upload task refuses an in-memory body; the file is
+        // what lets the transfer outlive the app.
+        #expect(FileManager.default.fileExists(atPath: fileURL.path))
+        let written = try Data(contentsOf: fileURL)
+        #expect(written == body)
+
+        let object = try #require(JSONSerialization.jsonObject(with: written) as? [String: Any])
+        #expect(object["client_id"] as? String == "client-id")
+    }
+
+    /// Cancellation must reach the URLSessionTask even when it arrives before
+    /// the task exists — otherwise a forgotten profile's batch still goes out.
+    @Test("A transfer cancelled before it starts never runs")
+    func handleCancelsBeforeAdoption() throws {
+        let handle = TransferHandle()
+        let url = try #require(URL(string: "https://thane.example/never"))
+        let task = URLSession.shared.dataTask(with: url)
+
+        handle.cancel()
+        handle.adopt(task)
+
+        #expect(task.state == .canceling || task.state == .completed)
+    }
+
+    @Test("A transfer cancelled after adoption is cancelled")
+    func handleCancelsAfterAdoption() throws {
+        let handle = TransferHandle()
+        let url = try #require(URL(string: "https://thane.example/never"))
+        let task = URLSession.shared.dataTask(with: url)
+
+        handle.adopt(task)
+        handle.cancel()
+
+        #expect(task.state == .canceling || task.state == .completed)
+    }
+
     private func makeBatch() throws -> ObservationBatch {
         let payload = try AnyCodable.fromEncodable([
             "latitude": 41.8819,
