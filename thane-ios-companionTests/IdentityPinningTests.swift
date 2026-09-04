@@ -224,6 +224,81 @@ struct IdentityPinningTests {
         #expect(service.pin?.matches(evidence) == true)
     }
 
+    // MARK: - Stored evidence for background delivery
+
+    /// A process launched by Core Location has no scene and cannot fetch
+    /// identity evidence. The stored snapshot is what lets it decide whether
+    /// it may deliver at all.
+    @Test("Stored evidence is restored when it matches the pin and is inside the ceiling")
+    func storedEvidenceRestores() throws {
+        let evidence = try IdentityTestFixture.evidence(observedAt: Date())
+        let store = IdentityPinTestStore()
+        let service = IdentityPinningService(connectionID: connectionID, secureStore: store)
+        try service.pin(evidence)
+        service.storeEvidence(evidence)
+
+        let relaunched = IdentityPinningService(connectionID: connectionID, secureStore: store)
+        let restored = try #require(relaunched.restoredEvidence())
+        #expect(restored.instance.id == evidence.instance.id)
+        #expect(store.savedAccounts.contains("thane-identity-evidence.connection-one"))
+    }
+
+    /// The ceiling is the whole of what this relaxation costs: an identity
+    /// rotated or revoked goes unnoticed by a phone that never reaches the
+    /// foreground, but only for this long.
+    @Test("Stored evidence past the ceiling stops authorising delivery")
+    func storedEvidenceExpires() throws {
+        let store = IdentityPinTestStore()
+        let service = IdentityPinningService(connectionID: connectionID, secureStore: store)
+        let old = try IdentityTestFixture.evidence(
+            observedAt: Date().addingTimeInterval(-IdentityContinuityState.maximumStoredEvidenceAge - 60)
+        )
+        try service.pin(old)
+        service.storeEvidence(old)
+
+        #expect(service.restoredEvidence() == nil)
+    }
+
+    /// Continuity is *not* relaxed. Only recency is. A snapshot that does not
+    /// match the pin authorises nothing, so this phone cannot be pointed at a
+    /// different Thane by anything held on the device.
+    @Test("Stored evidence that does not match the pin is refused")
+    func storedEvidenceMustMatchPin() throws {
+        let store = IdentityPinTestStore()
+        let service = IdentityPinningService(connectionID: connectionID, secureStore: store)
+        let pinned = try IdentityTestFixture.evidence(observedAt: Date())
+        try service.pin(pinned)
+
+        let impostor = replacingInstance(
+            in: pinned,
+            with: ThaneInstanceIdentity(
+                id: "thane:ed25519:SHA256:someone-else",
+                name: pinned.instance.name,
+                identityKey: pinned.instance.identityKey,
+                channelCA: pinned.instance.channelCA
+            )
+        )
+        service.storeEvidence(impostor)
+
+        #expect(service.restoredEvidence() == nil)
+    }
+
+    @Test("Forgetting an agent removes its stored evidence")
+    func forgettingRemovesStoredEvidence() throws {
+        let evidence = try IdentityTestFixture.evidence(observedAt: Date())
+        let store = IdentityPinTestStore()
+        let service = IdentityPinningService(connectionID: connectionID, secureStore: store)
+        try service.pin(evidence)
+        service.storeEvidence(evidence)
+        #expect(service.restoredEvidence() != nil)
+
+        try service.forget()
+
+        let relaunched = IdentityPinningService(connectionID: connectionID, secureStore: store)
+        #expect(relaunched.restoredEvidence() == nil)
+        #expect(store.value(account: "thane-identity-evidence.connection-one") == nil)
+    }
+
     private func replacingInstance(
         in evidence: ThaneIdentityEvidence,
         with instance: ThaneInstanceIdentity

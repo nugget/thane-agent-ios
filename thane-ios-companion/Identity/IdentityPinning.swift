@@ -48,6 +48,17 @@ private extension PublicIdentityMaterial {
 nonisolated enum IdentityContinuityState: Equatable, Sendable {
     static let maximumEvidenceAge: TimeInterval = 15 * 60
 
+    /// How long a *stored* evidence snapshot may authorise delivery when no
+    /// fresh fetch is possible.
+    ///
+    /// A background launch has no scene, so it cannot obtain recency at all.
+    /// Refusing on that basis meant a wake recorded and never sent. This
+    /// relaxes recency only: the snapshot must still match the pin, so the
+    /// phone cannot be redirected to a different Thane. What it gives up is
+    /// promptness — an identity rotated or revoked goes unnoticed by a phone
+    /// that never reaches the foreground for up to this long.
+    static let maximumStoredEvidenceAge: TimeInterval = 7 * 24 * 60 * 60
+
     case notPinned
     case presented
     case matching
@@ -146,6 +157,10 @@ final class IdentityPinningService {
     func forget() throws {
         try secureStore.delete(account: securityScope.identityPinAccount)
         try secureStore.delete(account: ConnectionSecurityScope.legacyIdentityPinAccount)
+        // The stored evidence outlives the pin unless it is removed here,
+        // and evidence without a pin could authorise nothing — but leaving
+        // a forgotten agent's identity on the device is its own problem.
+        try? secureStore.delete(account: securityScope.identityEvidenceAccount)
         pin = nil
         blockingError = nil
         lastError = nil
@@ -177,6 +192,45 @@ final class IdentityPinningService {
 
     private var securityScope: ConnectionSecurityScope {
         ConnectionSecurityScope(connectionID: connectionID)
+    }
+
+    /// Persists the evidence behind the same accessibility class as the
+    /// token: readable after first unlock, which is the window a background
+    /// wake actually runs in, and never synced off this device.
+    func storeEvidence(_ evidence: ThaneIdentityEvidence) {
+        do {
+            let data = try JSONEncoder().encode(evidence)
+            try secureStore.save(
+                String(decoding: data, as: UTF8.self),
+                account: securityScope.identityEvidenceAccount
+            )
+        } catch {
+            // Not fatal: the next foreground activation fetches evidence
+            // again. Losing the snapshot costs background delivery, not
+            // correctness.
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// The stored snapshot, if it still matches the pin and is inside the
+    /// ceiling. Returns nil rather than throwing: an unreadable or expired
+    /// snapshot is simply an absent one.
+    func restoredEvidence(now: Date = Date()) -> ThaneIdentityEvidence? {
+        guard let pin else { return nil }
+        guard let raw = try? secureStore.load(account: securityScope.identityEvidenceAccount),
+              let evidence = try? JSONDecoder().decode(ThaneIdentityEvidence.self, from: Data(raw.utf8)),
+              pin.matches(evidence),
+              now.timeIntervalSince(evidence.observedAt) <= IdentityContinuityState.maximumStoredEvidenceAge
+        else {
+            return nil
+        }
+        return evidence
+    }
+
+    /// Removes the snapshot. Called wherever the pin itself is cleared, so a
+    /// forgotten agent leaves nothing behind that could authorise delivery.
+    func discardStoredEvidence() {
+        try? secureStore.delete(account: securityScope.identityEvidenceAccount)
     }
 
     private static func loadPin(
