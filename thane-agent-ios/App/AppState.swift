@@ -100,7 +100,13 @@ final class AppState {
         profiles.removeAll { $0 === profile }
         AgentProfileRoster.removeProfileID(profile.id, in: defaults)
         if activeProfile === profile {
-            activeProfile = profiles[0]
+            // Never promote a profile whose own teardown is still suspended —
+            // with three or more profiles the surviving candidate at index 0 may
+            // itself be mid-removal, which would briefly surface a partially
+            // destroyed agent as the active one.
+            activeProfile = profiles.first {
+                !removalsInFlight.contains(ObjectIdentifier($0))
+            } ?? profiles[0]
             AgentProfileRoster.setActiveProfileID(activeProfile.id, in: defaults)
         }
         return true

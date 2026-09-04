@@ -120,6 +120,26 @@ struct AppStateTests {
         )
     }
 
+    @Test("A profile being removed is never promoted to active")
+    func removalNeverPromotesADyingProfile() async throws {
+        let fixture = try AppStateFixture()
+        defer { fixture.cleanup() }
+        let appState = fixture.appState()
+        let first = appState.activeProfile
+        let second = appState.addProfile()
+        let third = appState.addProfile()
+        appState.selectProfile(first)
+
+        // With three profiles, the survivor at index 0 may itself be mid-removal.
+        async let removingFirst = appState.removeProfile(first)
+        async let removingSecond = appState.removeProfile(second)
+        _ = await [removingFirst, removingSecond]
+
+        #expect(appState.profiles.contains { $0 === appState.activeProfile })
+        #expect(appState.activeProfile !== first)
+        #expect(appState.profiles.contains { $0 === third })
+    }
+
     @Test("Removing the only profile is refused before any teardown begins")
     func removingLastProfileIsRefused() async throws {
         let fixture = try AppStateFixture()

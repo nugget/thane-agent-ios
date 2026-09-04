@@ -192,6 +192,70 @@ struct ConnectionSettingsTests {
         )
     }
 
+    @Test("An interrupted adoption re-derives identical identities on the next launch")
+    func interruptedAdoptionIsRecoverable() throws {
+        let fixture = try SettingsFixture()
+        defer { fixture.cleanup() }
+        fixture.defaults.set("connection-one", forKey: "connection.configurationID")
+        fixture.defaults.set("profile-one", forKey: "connection.profileID")
+
+        // Simulate a process death partway through adoption: some scoped values
+        // landed, but the anchor and roster never did. Recovery must re-run
+        // adoption rather than treating the profile as already migrated.
+        fixture.defaults.set("https://thane.example", forKey: "agent.profile-one.baseURL")
+
+        let profileIDs = AgentProfileRoster.resolveProfileIDs(in: fixture.defaults)
+
+        #expect(profileIDs == ["profile-one"])
+        #expect(fixture.settings(profileID: "profile-one").connectionID == "connection-one")
+    }
+
+    @Test("An anchor is never written before the connection identity it vouches for")
+    func anchorIsWrittenAfterConnectionIdentity() throws {
+        // A completed adoption looks identical whichever order these land in, so
+        // asserting the end state cannot catch this. The defect lives entirely in
+        // the crash window: an anchor visible first ends recovery early on the
+        // next launch, a fresh connection ID is minted, and the existing token
+        // and identity pin become unreachable. Observe the write order directly.
+        let suite = "ConnectionSettingsTests.order.\(UUID().uuidString)"
+        let defaults = try #require(OrderRecordingDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("connection-one", forKey: "connection.configurationID")
+        defaults.set("profile-one", forKey: "connection.profileID")
+        defaults.removeAllRecordedWrites()
+
+        _ = AgentProfileRoster.resolveProfileIDs(in: defaults)
+
+        let anchor = defaults.recordedWrites.firstIndex(of: "agent.profile-one.profileID")
+        let connection = defaults.recordedWrites.firstIndex(of: "agent.profile-one.configurationID")
+        let anchorIndex = try #require(anchor)
+        let connectionIndex = try #require(connection)
+        #expect(connectionIndex < anchorIndex)
+    }
+
+    @Test("A non-owner profile never deletes the unmigrated legacy token")
+    func nonOwnerLeavesLegacyTokenIntact() throws {
+        let credentials = FakeCredentialStore(
+            values: [ConnectionSecurityScope.legacyTokenAccount: "secret"]
+        )
+        let fixture = try SettingsFixture(credentials: credentials)
+        defer { fixture.cleanup() }
+        fixture.defaults.set("connection-one", forKey: "connection.configurationID")
+        #expect(AgentProfileRoster.resolveProfileIDs(in: fixture.defaults) == ["connection-one"])
+        _ = AgentProfileRoster.appendProfileID(in: fixture.defaults)
+
+        // A non-owner that already holds its own scoped token still reaches the
+        // early-return branch of storedToken(); that branch must not consume the
+        // legacy account belonging to the profile that has yet to migrate.
+        let other = fixture.settings(profileID: "profile-two")
+        try other.saveToken("other-token")
+        #expect(try other.storedToken() == "other-token")
+        #expect(credentials.value(account: ConnectionSecurityScope.legacyTokenAccount) == "secret")
+
+        let owner = fixture.settings(profileID: "connection-one")
+        #expect(try owner.storedToken() == "secret")
+    }
+
     @Test("Legacy client identity and token migrate into the adopting profile only")
     func legacyMigration() throws {
         let credentials = FakeCredentialStore(
@@ -325,6 +389,21 @@ private final class FakeCredentialStore: CredentialStoring {
 
     func value(account: String) -> String? {
         values[account]
+    }
+}
+
+/// Records the order of key writes so ordering invariants that only matter in a
+/// crash window can be asserted without actually interrupting the process.
+private final class OrderRecordingDefaults: UserDefaults, @unchecked Sendable {
+    private(set) var recordedWrites: [String] = []
+
+    override func set(_ value: Any?, forKey defaultName: String) {
+        recordedWrites.append(defaultName)
+        super.set(value, forKey: defaultName)
+    }
+
+    func removeAllRecordedWrites() {
+        recordedWrites.removeAll()
     }
 }
 

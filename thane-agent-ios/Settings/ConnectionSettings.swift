@@ -53,7 +53,6 @@ final class ConnectionSettings {
         self.profileID = profileID
         self.defaults = defaults
         self.credentialStore = credentialStore
-        Self.writeProfileAnchor(profileID: profileID, in: defaults)
 
         urlString = defaults.string(forKey: Self.urlKey(for: profileID)) ?? ""
         isEnabled = defaults.bool(forKey: Self.enabledKey(for: profileID))
@@ -68,16 +67,20 @@ final class ConnectionSettings {
             resolvedConnectionID = generated
         }
         connectionID = resolvedConnectionID
+        // The anchor is written only now: it is the signal that recovery uses to
+        // rebuild a lost roster, and it must never be visible before the scoped
+        // connection ID it vouches for.
+        Self.writeProfileAnchor(profileID: profileID, in: defaults)
 
         let scopedClientIDKey = Self.pairwiseClientIDKey(for: resolvedConnectionID)
         if let existing = defaults.string(forKey: scopedClientIDKey),
            !existing.isEmpty {
             pairwiseClientID = existing
-        } else if let legacy = Self.claimLegacyClientID(
-            profileID: profileID,
-            in: defaults
-        ) {
+        } else if let legacy = Self.legacyClientID(ownedBy: profileID, in: defaults) {
+            // Persist the scoped copy before consuming the only other record of
+            // this identity, so an interruption cannot lose it outright.
             defaults.set(legacy, forKey: scopedClientIDKey)
+            defaults.removeObject(forKey: Self.legacyClientIDKey)
             pairwiseClientID = legacy
         } else {
             let generated = UUID().uuidString
@@ -99,7 +102,9 @@ final class ConnectionSettings {
 
     func storedToken() throws -> String? {
         if let scoped = try credentialStore.load(account: securityScope.tokenAccount) {
-            try credentialStore.delete(account: ConnectionSecurityScope.legacyTokenAccount)
+            if Self.ownsLegacyIdentity(profileID: profileID, in: defaults) {
+                try credentialStore.delete(account: ConnectionSecurityScope.legacyTokenAccount)
+            }
             return scoped
         }
         guard Self.ownsLegacyIdentity(profileID: profileID, in: defaults),
@@ -223,8 +228,6 @@ final class ConnectionSettings {
         connectionID: String,
         in defaults: UserDefaults
     ) {
-        writeProfileAnchor(profileID: profileID, in: defaults)
-
         if defaults.object(forKey: connectionIDKey(for: profileID)) == nil {
             defaults.set(connectionID, forKey: connectionIDKey(for: profileID))
         }
@@ -244,6 +247,12 @@ final class ConnectionSettings {
         // and connection ID keys stay put as the recovery anchor.
         defaults.removeObject(forKey: legacyURLKey)
         defaults.removeObject(forKey: legacyEnabledKey)
+
+        // Written last, so an interrupted adoption leaves no anchor and the next
+        // launch re-runs it against the retained legacy keys, re-deriving
+        // identical IDs. An anchor published first would end recovery early and
+        // let a fresh connection ID be minted over the existing token and pin.
+        writeProfileAnchor(profileID: profileID, in: defaults)
     }
 
     /// True when this profile inherited the pre-scoping installation, and is
@@ -264,11 +273,14 @@ final class ConnectionSettings {
         return owner == profileID
     }
 
-    /// Adopts the pre-pairwise global client ID, but only for the profile that
+    /// Reads the pre-pairwise global client ID, but only for the profile that
     /// actually inherited it. Without this ownership check the first profile
     /// constructed would steal an identifier belonging to another.
-    private nonisolated static func claimLegacyClientID(
-        profileID: String,
+    ///
+    /// This only reads. Consuming the legacy key is the caller's job, after the
+    /// scoped copy has been persisted.
+    private nonisolated static func legacyClientID(
+        ownedBy profileID: String,
         in defaults: UserDefaults
     ) -> String? {
         guard ownsLegacyIdentity(profileID: profileID, in: defaults),
@@ -276,7 +288,6 @@ final class ConnectionSettings {
               !legacy.isEmpty else {
             return nil
         }
-        defaults.removeObject(forKey: legacyClientIDKey)
         return legacy
     }
 
