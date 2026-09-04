@@ -258,6 +258,35 @@ struct ObservationPublisherTests {
         Issue.record("Timed out waiting for asynchronous publisher state")
     }
 
+    /// A background transfer runs out of process and outlives the Task that
+    /// started it, so forgetting an agent has to reclaim it explicitly. Without
+    /// this, nsurlsessiond keeps POSTing a batch whose credentials and outbox
+    /// entry have already been erased.
+    @Test("Forgetting reclaims out-of-process transfers before erasing the queue")
+    func forgettingReclaimsTransfers() async throws {
+        let fixture = try PublisherFixture()
+        defer { fixture.cleanup() }
+        let uploader = ReclaimingObservationUploader()
+        let publisher = ObservationPublisher(
+            outbox: ObservationOutbox(fileURL: fixture.fileURL),
+            uploader: uploader
+        )
+        publisher.configure(
+            baseURL: try #require(URL(string: "https://thane.example")),
+            token: "token",
+            clientID: "client-id",
+            deliveryScope: ObservationDeliveryScope(
+                connectionID: "connection-primary",
+                identityID: "thane:ed25519:SHA256:primary"
+            ),
+            authorizationExpiresAt: .distantFuture
+        )
+
+        try await publisher.discardAllPending()
+
+        #expect(uploader.cancelAllCallCount == 1)
+    }
+
     private static func locationSnapshot() -> LocationSnapshot {
         LocationSnapshot(
             capturedAt: "2026-09-01T12:00:00Z",
@@ -305,6 +334,24 @@ private final class SequencedObservationUploader: ObservationUploading {
     func failFirstUpload() {
         firstContinuation?.resume(throwing: PublisherTestError.expectedFailure)
         firstContinuation = nil
+    }
+}
+
+/// Records whether destructive teardown reclaimed its transfers.
+@MainActor
+private final class ReclaimingObservationUploader: ObservationUploading {
+    private(set) var cancelAllCallCount = 0
+
+    func upload(
+        _ batch: ObservationBatch,
+        to baseURL: URL,
+        token: String
+    ) async throws -> ObservationIngestResult {
+        ObservationIngestResult(stored: batch.events.count, ignored: 0, receivedAt: Date())
+    }
+
+    func cancelAllTransfers() async {
+        cancelAllCallCount += 1
     }
 }
 

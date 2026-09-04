@@ -206,6 +206,13 @@ final class ObservationPublisher {
         flushRequestedWhileBusy = false
         isUploading = false
 
+        // Reclaim out-of-process transfers before erasing anything. Cancelling
+        // the Swift task now propagates to its URLSessionTask, but a transfer
+        // inherited from an earlier launch has no Swift task at all, and would
+        // otherwise keep POSTing this profile's private batch to an agent the
+        // operator has just forgotten.
+        await uploader.cancelAllTransfers()
+
         await activeUpload?.value
         await activePreparation?.value
         for task in activeEnqueues {

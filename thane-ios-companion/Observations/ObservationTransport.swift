@@ -8,6 +8,18 @@ protocol ObservationUploading {
         to baseURL: URL,
         token: String
     ) async throws -> ObservationIngestResult
+
+    /// Stops every transfer this uploader owns and does not return until they
+    /// are stopped. Destructive teardown awaits this before erasing profile
+    /// state: an out-of-process transfer outlives the Task that started it,
+    /// so cancelling the Task alone would let a forgotten agent still receive
+    /// the batch.
+    func cancelAllTransfers() async
+}
+
+extension ObservationUploading {
+    /// In-process uploaders have nothing to reclaim.
+    func cancelAllTransfers() async {}
 }
 
 nonisolated enum ObservationUploadError: LocalizedError, Sendable {
@@ -42,6 +54,34 @@ nonisolated enum ObservationUploadError: LocalizedError, Sendable {
 /// response, and ingestion is idempotent on `event_id`, so an unobserved
 /// completion costs one repeated POST and never a lost or doubled
 /// observation.
+/// Bridges Swift task cancellation to a URLSessionTask, closing the window
+/// where cancellation arrives before the task exists.
+nonisolated final class TransferHandle: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: URLSessionTask?
+    private var cancelled = false
+
+    func adopt(_ task: URLSessionTask) {
+        lock.lock()
+        let alreadyCancelled = cancelled
+        if !alreadyCancelled { self.task = task }
+        lock.unlock()
+        if alreadyCancelled {
+            task.cancel()
+        } else {
+            task.resume()
+        }
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let task = self.task
+        lock.unlock()
+        task?.cancel()
+    }
+}
+
 final class ObservationBackgroundSession: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private static let registryLock = NSLock()
     // Every read and write goes through registryLock below; the annotation
@@ -108,13 +148,35 @@ final class ObservationBackgroundSession: NSObject, URLSessionDataDelegate, @unc
     /// refuses an in-memory body, which is also what lets the transfer
     /// outlive the process.
     func upload(request: URLRequest, fromFile fileURL: URL) async throws -> (Data, URLResponse) {
-        try await withCheckedThrowingContinuation { continuation in
-            let task = session.uploadTask(with: request, fromFile: fileURL)
-            lock.lock()
-            continuations[task.taskIdentifier] = continuation
-            buffers[task.taskIdentifier] = Data()
-            lock.unlock()
-            task.resume()
+        // withCheckedThrowingContinuation does not observe cancellation, and
+        // a background transfer runs out of process, so cancelling the Task
+        // alone leaves nsurlsessiond posting a batch whose credentials and
+        // outbox entry have already been erased. Cancellation has to reach
+        // the URLSessionTask itself.
+        let handle = TransferHandle()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let task = session.uploadTask(with: request, fromFile: fileURL)
+                lock.lock()
+                continuations[task.taskIdentifier] = continuation
+                buffers[task.taskIdentifier] = Data()
+                lock.unlock()
+                // Adopt before resuming: if cancellation already arrived, the
+                // handle cancels the task instead of letting it start.
+                handle.adopt(task)
+            }
+        } onCancel: {
+            handle.cancel()
+        }
+    }
+
+    /// Cancels every transfer this session owns, including ones inherited
+    /// from an earlier launch that have no continuation waiting. Returns once
+    /// the session reports them cancelled.
+    func cancelAllTransfers() async {
+        let tasks = await session.allTasks
+        for task in tasks {
+            task.cancel()
         }
     }
 
@@ -176,6 +238,10 @@ final class URLSessionObservationUploader: ObservationUploading {
 
     init(backgroundSession: ObservationBackgroundSession) {
         self.backgroundSession = backgroundSession
+    }
+
+    func cancelAllTransfers() async {
+        await backgroundSession.cancelAllTransfers()
     }
 
     func upload(

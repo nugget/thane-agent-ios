@@ -104,6 +104,32 @@ struct ObservationTransportTests {
         #expect(object["client_id"] as? String == "client-id")
     }
 
+    /// Cancellation must reach the URLSessionTask even when it arrives before
+    /// the task exists — otherwise a forgotten profile's batch still goes out.
+    @Test("A transfer cancelled before it starts never runs")
+    func handleCancelsBeforeAdoption() throws {
+        let handle = TransferHandle()
+        let url = try #require(URL(string: "https://thane.example/never"))
+        let task = URLSession.shared.dataTask(with: url)
+
+        handle.cancel()
+        handle.adopt(task)
+
+        #expect(task.state == .canceling || task.state == .completed)
+    }
+
+    @Test("A transfer cancelled after adoption is cancelled")
+    func handleCancelsAfterAdoption() throws {
+        let handle = TransferHandle()
+        let url = try #require(URL(string: "https://thane.example/never"))
+        let task = URLSession.shared.dataTask(with: url)
+
+        handle.adopt(task)
+        handle.cancel()
+
+        #expect(task.state == .canceling || task.state == .completed)
+    }
+
     private func makeBatch() throws -> ObservationBatch {
         let payload = try AnyCodable.fromEncodable([
             "latitude": 41.8819,
