@@ -525,6 +525,36 @@ struct AgentProfileIdentityBoundaryTests {
         #expect(fixture.uploader.callCount == 1)
     }
 
+    /// The regression the endpoint binding exists for: a pinned operator edits
+    /// the server URL, the refresh against the new address fails, and the
+    /// fallback must not hand queued private data to an endpoint nothing has
+    /// verified. The connection ID — and so the Keychain account holding the
+    /// snapshot — survives that edit, so identity matching alone would let it
+    /// through.
+    @Test("An edited URL plus a failed refresh does not deliver on old evidence")
+    func editedEndpointDoesNotInheritStoredEvidence() async throws {
+        let evidence = try IdentityTestFixture.evidence(observedAt: Date())
+        let fetcher = AppIdentityFetcher(evidence: evidence)
+        fetcher.result = .failure(AppIdentityTestError.expectedFailure)
+        let fixture = try AppIdentityFixture(
+            evidence: evidence,
+            pinnedEvidence: evidence,
+            storedEvidence: evidence,
+            storedEvidenceSourceURL: URL(string: "https://previous.example"),
+            identityService: IdentityService(fetcher: fetcher),
+            connectionEnabled: true
+        )
+        defer { fixture.cleanup() }
+
+        let callback = try #require(fixture.profile.locationService.onSignificantLocation)
+        callback(Self.backgroundFix())
+
+        try await waitUntil { fixture.profile.observationPublisher.pendingCount == 1 }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(fixture.uploader.callCount == 0)
+        #expect(fixture.profile.observationPublisher.pendingCount == 1)
+    }
+
     /// The ceiling is load-bearing, not decorative.
     @Test("A relaunch with expired stored evidence records but does not deliver")
     func expiredStoredEvidenceBlocksBackgroundDelivery() async throws {
@@ -555,6 +585,11 @@ struct AgentProfileIdentityBoundaryTests {
 
 @MainActor
 private final class AppIdentityFixture {
+    /// The endpoint this fixture's profile is configured against. Named so a
+    /// stored snapshot can be seeded for it, or deliberately for a different
+    /// one, without a force-unwrap or a literal repeated in two places.
+    static let defaultEndpoint = URL(string: "https://thane.example")!
+
     let profile: AgentProfile
     let secureStore: AppIdentitySecureStore
     let uploader: AppIdentityUploader
@@ -568,6 +603,7 @@ private final class AppIdentityFixture {
         pinnedEvidence: ThaneIdentityEvidence? = nil,
         storedEvidence: ThaneIdentityEvidence? = nil,
         storedEvidenceVerifiedAt: Date? = nil,
+        storedEvidenceSourceURL: URL? = nil,
         identityService: IdentityService? = nil,
         connectionEnabled: Bool = false,
         photoLibrary: (any PhotoLibraryReading)? = nil
@@ -594,13 +630,19 @@ private final class AppIdentityFixture {
         if let pinnedEvidence {
             try pinning.pin(pinnedEvidence)
         }
+        // Set the endpoint before seeding, so a snapshot defaults to the
+        // address this profile will actually use.
+        settings.urlString = Self.defaultEndpoint.absoluteString
         // Seeded before AgentProfile is built, so its init sees exactly what a
         // process launched by Core Location sees: a pin and a stored snapshot
         // in the Keychain, and no live evidence anywhere.
         if let storedEvidence {
-            pinning.storeEvidence(storedEvidence, verifiedAt: storedEvidenceVerifiedAt ?? Date())
+            pinning.storeEvidence(
+                storedEvidence,
+                from: storedEvidenceSourceURL ?? Self.defaultEndpoint,
+                verifiedAt: storedEvidenceVerifiedAt ?? Date()
+            )
         }
-        settings.urlString = "https://thane.example"
         settings.isEnabled = connectionEnabled
         let uploader = AppIdentityUploader()
         self.uploader = uploader

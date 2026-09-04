@@ -6,6 +6,7 @@ import Testing
 @MainActor
 struct IdentityPinningTests {
     private let connectionID = "connection-one"
+    private let endpoint = URL(string: "https://thane.example")!
 
     @Test("A pin persists the exact stable identity material")
     func persistenceAndMatching() throws {
@@ -235,10 +236,10 @@ struct IdentityPinningTests {
         let store = IdentityPinTestStore()
         let service = IdentityPinningService(connectionID: connectionID, secureStore: store)
         try service.pin(evidence)
-        service.storeEvidence(evidence)
+        service.storeEvidence(evidence, from: endpoint)
 
         let relaunched = IdentityPinningService(connectionID: connectionID, secureStore: store)
-        let restored = try #require(relaunched.restoredEvidence())
+        let restored = try #require(relaunched.restoredEvidence(for: endpoint))
         #expect(restored.evidence.instance.id == evidence.instance.id)
         #expect(store.savedAccounts.contains("thane-identity-evidence.connection-one"))
     }
@@ -256,10 +257,11 @@ struct IdentityPinningTests {
         // ceiling is allowed to trust.
         service.storeEvidence(
             old,
+            from: endpoint,
             verifiedAt: Date().addingTimeInterval(-IdentityContinuityState.maximumStoredEvidenceAge - 60)
         )
 
-        #expect(service.restoredEvidence() == nil)
+        #expect(service.restoredEvidence(for: endpoint) == nil)
     }
 
     /// Continuity is *not* relaxed. Only recency is. A snapshot that does not
@@ -281,10 +283,11 @@ struct IdentityPinningTests {
         // Verified long ago by this device, whatever the server claims.
         service.storeEvidence(
             farFuture,
+            from: endpoint,
             verifiedAt: Date().addingTimeInterval(-IdentityContinuityState.maximumStoredEvidenceAge - 60)
         )
 
-        #expect(service.restoredEvidence() == nil)
+        #expect(service.restoredEvidence(for: endpoint) == nil)
     }
 
     @Test("Stored evidence that does not match the pin is refused")
@@ -303,9 +306,28 @@ struct IdentityPinningTests {
                 channelCA: pinned.instance.channelCA
             )
         )
-        service.storeEvidence(impostor)
+        service.storeEvidence(impostor, from: endpoint)
 
-        #expect(service.restoredEvidence() == nil)
+        #expect(service.restoredEvidence(for: endpoint) == nil)
+    }
+
+    /// The pin binds the snapshot to an identity; nothing binds it to an
+    /// address, and the connection ID scoping its Keychain account survives an
+    /// edit to the server URL. Without the endpoint check, evidence verified
+    /// against one Thane would authorise delivery to whatever URL was typed in
+    /// next, as soon as a refresh against that URL failed.
+    @Test("Stored evidence does not authorise a different endpoint")
+    func storedEvidenceIsBoundToItsEndpoint() throws {
+        let evidence = try IdentityTestFixture.evidence(observedAt: Date())
+        let store = IdentityPinTestStore()
+        let service = IdentityPinningService(connectionID: connectionID, secureStore: store)
+        try service.pin(evidence)
+        service.storeEvidence(evidence, from: endpoint)
+
+        let elsewhere = try #require(URL(string: "https://someone-else.example"))
+        #expect(service.restoredEvidence(for: elsewhere) == nil)
+        #expect(service.restoredEvidence(for: nil) == nil)
+        #expect(service.restoredEvidence(for: endpoint) != nil)
     }
 
     @Test("Forgetting an agent removes its stored evidence")
@@ -314,13 +336,13 @@ struct IdentityPinningTests {
         let store = IdentityPinTestStore()
         let service = IdentityPinningService(connectionID: connectionID, secureStore: store)
         try service.pin(evidence)
-        service.storeEvidence(evidence)
-        #expect(service.restoredEvidence() != nil)
+        service.storeEvidence(evidence, from: endpoint)
+        #expect(service.restoredEvidence(for: endpoint) != nil)
 
         try service.forget()
 
         let relaunched = IdentityPinningService(connectionID: connectionID, secureStore: store)
-        #expect(relaunched.restoredEvidence() == nil)
+        #expect(relaunched.restoredEvidence(for: endpoint) == nil)
         #expect(store.value(account: "thane-identity-evidence.connection-one") == nil)
     }
 

@@ -142,7 +142,12 @@ final class AgentProfile: Identifiable {
         identityService.onEvidenceUpdated = { [weak self] evidence in
             // Persist before reconciling: a later launch with no scene reads
             // this snapshot to decide whether it may deliver at all.
-            self?.identityPinning.storeEvidence(evidence)
+            // Bound to the endpoint it came from: the connection ID that
+            // scopes its Keychain account survives a URL edit, so the address
+            // has to travel with the snapshot.
+            if let source = self?.identityService.sourceURL {
+                self?.identityPinning.storeEvidence(evidence, from: source)
+            }
             self?.scheduleIdentityRefreshDeadline(for: evidence)
             self?.reconcileIdentityBoundary()
         }
@@ -531,7 +536,7 @@ final class AgentProfile: Identifiable {
         // and never send. The stored snapshot still has to match the pin —
         // continuity is intact and this phone cannot be pointed at a
         // different Thane — only recency is relaxed, to the ceiling.
-        if let restored = identityPinning.restoredEvidence() {
+        if let restored = identityPinning.restoredEvidence(for: connectionSettings.serverURL) {
             observationPublisher.configure(
                 baseURL: connectionSettings.serverURL,
                 token: tokenInput,

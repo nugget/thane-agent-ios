@@ -51,10 +51,17 @@ private extension PublicIdentityMaterial {
 nonisolated struct StoredIdentityEvidence: Codable, Equatable, Sendable {
     let evidence: ThaneIdentityEvidence
     let verifiedAt: Date
+    /// The endpoint this evidence was fetched from. The pin binds the
+    /// snapshot to an *identity*; nothing binds it to an *address*, and the
+    /// connection ID that scopes its Keychain account survives an edit to the
+    /// server URL. Without this, evidence verified against one endpoint could
+    /// authorise delivery to another.
+    let sourceURL: URL
 
     enum CodingKeys: String, CodingKey {
         case evidence
         case verifiedAt = "verified_at"
+        case sourceURL = "source_url"
     }
 }
 
@@ -216,9 +223,17 @@ final class IdentityPinningService {
     /// would produce a negative age, pass any age check, and authorise
     /// delivery until that timestamp plus the ceiling. The bound has to come
     /// from a clock this device controls.
-    func storeEvidence(_ evidence: ThaneIdentityEvidence, verifiedAt: Date = Date()) {
+    func storeEvidence(
+        _ evidence: ThaneIdentityEvidence,
+        from sourceURL: URL,
+        verifiedAt: Date = Date()
+    ) {
         do {
-            let record = StoredIdentityEvidence(evidence: evidence, verifiedAt: verifiedAt)
+            let record = StoredIdentityEvidence(
+                evidence: evidence,
+                verifiedAt: verifiedAt,
+                sourceURL: sourceURL
+            )
             let data = try JSONEncoder().encode(record)
             try secureStore.save(
                 String(decoding: data, as: UTF8.self),
@@ -232,14 +247,19 @@ final class IdentityPinningService {
         }
     }
 
-    /// The stored snapshot, if it still matches the pin and was verified
-    /// inside the ceiling. Returns nil rather than throwing: an unreadable or
-    /// expired snapshot is simply an absent one.
-    func restoredEvidence(now: Date = Date()) -> StoredIdentityEvidence? {
-        guard let pin else { return nil }
+    /// The stored snapshot, if it still matches the pin, was fetched from the
+    /// endpoint delivery is about to use, and was verified inside the ceiling.
+    /// Returns nil rather than throwing: an unreadable, redirected or expired
+    /// snapshot is simply an absent one.
+    ///
+    /// `serverURL` is required rather than optional-by-default so a caller
+    /// cannot reach this without deciding what endpoint it is authorising.
+    func restoredEvidence(for serverURL: URL?, now: Date = Date()) -> StoredIdentityEvidence? {
+        guard let pin, let serverURL else { return nil }
         guard let raw = try? secureStore.load(account: securityScope.identityEvidenceAccount),
               let record = try? JSONDecoder().decode(StoredIdentityEvidence.self, from: Data(raw.utf8)),
               pin.matches(record.evidence),
+              record.sourceURL == serverURL,
               record.verifiedAt <= now,
               now.timeIntervalSince(record.verifiedAt) <= IdentityContinuityState.maximumStoredEvidenceAge
         else {
