@@ -1,6 +1,6 @@
 set quiet
 
-app := "thane-agent-ios"
+app := "thane-ios-companion"
 
 export DEVELOPER_DIR := env("DEVELOPER_DIR", "/Applications/Xcode.app/Contents/Developer")
 
@@ -51,9 +51,9 @@ test:
 
 [doc("Run the full local validation gate")]
 lint:
-    plutil -lint thane-agent-ios/Info.plist
-    plutil -lint thane-agent-ios/PrivacyInfo.xcprivacy
-    plutil -lint thane-agent-ios.xcodeproj/project.pbxproj
+    plutil -lint thane-ios-companion/Info.plist
+    plutil -lint thane-ios-companion/PrivacyInfo.xcprivacy
+    plutil -lint thane-ios-companion.xcodeproj/project.pbxproj
     git diff --check
 
 [doc("Run the full local validation gate")]

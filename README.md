@@ -1,4 +1,4 @@
-# thane-agent-ios
+# thane-ios-companion
 
 An App Store-oriented iPhone and iPad companion that makes operator-approved
 iOS context available to [Thane](https://github.com/nugget/thane-ai-agent).
@@ -106,7 +106,7 @@ focused capability with bounded queries and clear field-level disclosure; they
 should not be bundled behind a single broad consent switch.
 
 The broader identity-first product arc is tracked in
-[roadmap issue #8](https://github.com/nugget/thane-agent-ios/issues/8), including
+[roadmap issue #8](https://github.com/nugget/thane-ios-companion/issues/8), including
 identity continuity, typed URL handling, notifications and inbox, and a
 protocol-neutral conversation surface. Conversation transport and synchronized
 history remain server-owned future work under
