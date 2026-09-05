@@ -130,6 +130,19 @@ struct SharingView: View {
 
                 Divider()
 
+                Toggle(isOn: Binding(
+                    get: { profile.sharingPreferences.visitsEnabled },
+                    set: { profile.setVisitSharing(enabled: $0) }
+                )) {
+                    PreferenceLabel(
+                        title: "Visit History",
+                        detail: "Shares places you stayed, with arrival and departure times and how long you were there, for up to the last 48 hours and 16 places. This is a record of where you spend time, not a single position, and Thane keeps what it receives. Separate from Background Location Updates and off until you turn it on."
+                    )
+                }
+                .disabled(profile.locationService.authorizationStatus == .notDetermined)
+
+                Divider()
+
                 OperationalRow(
                     title: "Permission",
                     value: locationPermissionLabel,
@@ -258,8 +271,12 @@ struct SharingView: View {
         }
     }
 
+    /// Either Always consumer stranded at When In Use needs the same route
+    /// out. Keyed to background location alone, an operator who enabled only
+    /// Visit History and declined the upgrade had no way back.
     private var backgroundPermissionNeedsSettings: Bool {
-        profile.sharingPreferences.backgroundLocationEnabled
+        (profile.sharingPreferences.backgroundLocationEnabled
+            || profile.sharingPreferences.visitsEnabled)
             && profile.locationService.authorizationStatus != .authorizedAlways
             && profile.locationService.authorizationStatus != .notDetermined
     }

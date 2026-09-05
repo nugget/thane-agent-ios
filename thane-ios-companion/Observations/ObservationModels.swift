@@ -13,6 +13,7 @@ nonisolated struct ObservationDeliveryScope: Codable, Equatable, Sendable {
 nonisolated enum ObservationKind: String, Codable, CaseIterable, Sendable {
     case location = "ios.location"
     case systemContext = "ios.system-context"
+    case visits = "ios.visits"
 }
 
 nonisolated enum ObservationStatus: String, Codable, Sendable {
@@ -144,7 +145,7 @@ nonisolated enum ObservationCoding {
         return ISO8601DateFormatter().date(from: value)
     }
 
-    private static func dateString(from date: Date) -> String {
+    static func dateString(from date: Date) -> String {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter.string(from: date)

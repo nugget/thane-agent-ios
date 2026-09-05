@@ -279,7 +279,7 @@ struct LocationServiceTests {
 }
 
 @MainActor
-private final class FakeLocationManager: LocationManaging {
+final class FakeLocationManager: LocationManaging {
     weak var delegate: (any CLLocationManagerDelegate)?
     var desiredAccuracy: CLLocationAccuracy = kCLLocationAccuracyThreeKilometers
     var authorizationStatus: CLAuthorizationStatus
@@ -288,6 +288,8 @@ private final class FakeLocationManager: LocationManaging {
     private(set) var requestLocationCount = 0
     private(set) var startSignificantCount = 0
     private(set) var stopSignificantCount = 0
+    private(set) var startVisitsCount = 0
+    private(set) var stopVisitsCount = 0
 
     private let callbackManager = CLLocationManager()
 
@@ -301,6 +303,14 @@ private final class FakeLocationManager: LocationManaging {
 
     func requestLocation() {
         requestLocationCount += 1
+    }
+
+    func startMonitoringVisits() {
+        startVisitsCount += 1
+    }
+
+    func stopMonitoringVisits() {
+        stopVisitsCount += 1
     }
 
     func startMonitoringSignificantLocationChanges() {
@@ -326,7 +336,7 @@ private final class FakeLocationManager: LocationManaging {
 }
 
 @MainActor
-private final class FakeAuthorizationSession: LocationAuthorizationSession {
+final class FakeAuthorizationSession: LocationAuthorizationSession {
     private(set) var invalidateCount = 0
 
     func invalidate() {
@@ -335,7 +345,7 @@ private final class FakeAuthorizationSession: LocationAuthorizationSession {
 }
 
 @MainActor
-private final class PreferencesFixture {
+final class PreferencesFixture {
     let preferences: SharingPreferences
     private let defaults: UserDefaults
     private let suite: String

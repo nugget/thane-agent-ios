@@ -12,6 +12,7 @@ final class AgentProfile: Identifiable {
     let connection: ServerConnection
     let platformRouter: PlatformServiceRouter
     let locationService: LocationService
+    let visitWindow: VisitWindowStore
     let photoService: PhotoService
     let observationPublisher: ObservationPublisher
     let identityService: IdentityService
@@ -56,10 +57,12 @@ final class AgentProfile: Identifiable {
         // Sourced unconditionally from the settings object so no collaborator
         // can address a different SHA-256 storage directory than another.
         let profileID = connectionSettings.profileID
+        let visitWindow = VisitWindowStore(profileID: profileID)
         let observationPublisher = observationPublisher ?? ObservationPublisher(
             outbox: ObservationOutbox(profileID: profileID),
             uploader: URLSessionObservationUploader(profileID: profileID)
         )
+        self.visitWindow = visitWindow
         self.id = profileID
         self.connectionSettings = connectionSettings
         self.sharingPreferences = sharingPreferences
@@ -97,6 +100,15 @@ final class AgentProfile: Identifiable {
         locationService.onBackgroundLocationUnavailable = { [weak observationPublisher] in
             observationPublisher?.withdraw(.location)
         }
+        locationService.onVisit = { [weak self, weak observationPublisher] visit in
+            guard let self else { return }
+            observationPublisher?.publishVisits(visitWindow.record(visit))
+            refreshIdentityOpportunistically()
+        }
+        locationService.onVisitMonitoringUnavailable = { [weak self, weak observationPublisher] in
+            self?.visitWindow.discardAll()
+            observationPublisher?.withdraw(.visits)
+        }
         locationService.restoreBackgroundMonitoringIfAuthorized()
         systemService.setChangeHandler { [weak self] in
             self?.publishSystemContextIfEnabled()
@@ -113,6 +125,13 @@ final class AgentProfile: Identifiable {
         router.register(
             capability: "ios.photos",
             handler: PhotoPlatformHandler(service: photoService)
+        )
+        router.register(
+            capability: "ios.visits",
+            handler: VisitsPlatformHandler(
+                store: visitWindow,
+                preferences: sharingPreferences
+            )
         )
         connection.registeredCapabilities = router.capabilities
         connection.onPlatformRequest = { [weak router] request in
@@ -359,6 +378,11 @@ final class AgentProfile: Identifiable {
         cancelIdentityRefreshDeadline()
         connectionSettings.isEnabled = false
         connection.disconnect()
+        // The window is keyed by profile, and the profile ID survives removal —
+        // so without this a replacement agent bound to the same profile would
+        // inherit the removed agent's visit history the moment Visit History
+        // was switched on.
+        visitWindow.discardAll()
         do {
             try await observationPublisher.discardAllPending()
             try identityPinning.forget()
@@ -380,6 +404,7 @@ final class AgentProfile: Identifiable {
         do {
             try connectionSettings.deleteToken()
             tokenInput = ""
+            visitWindow.discardAll()
             try identityPinning.forget()
             try await observationPublisher.discardAllPending()
             try inboxStore.discardAllProfileData()
@@ -451,6 +476,21 @@ final class AgentProfile: Identifiable {
         locationService.setBackgroundMonitoringEnabled(enabled)
         if !enabled {
             observationPublisher.withdraw(.location)
+        }
+    }
+
+    func setVisitSharing(enabled: Bool) {
+        guard sharingPreferences.counterpartyID == identityPinning.pin?.identityID,
+              sharingPreferences.counterpartyID != nil else {
+            configurationError = "Pin this agent before changing what is shared with it."
+            return
+        }
+        locationService.setVisitMonitoringEnabled(enabled)
+        if !enabled {
+            // Erase the on-device window as well as withdrawing, so nothing
+            // remains here to republish if it is switched back on.
+            visitWindow.discardAll()
+            observationPublisher.withdraw(.visits)
         }
     }
 
@@ -578,6 +618,10 @@ final class AgentProfile: Identifiable {
     }
 
     private func applySharingScope(_ counterpartyID: String?) {
+        // The window was gathered for the previous counterparty. Scoped by
+        // profile rather than by counterparty, it would otherwise carry across
+        // the boundary the rest of this method exists to enforce.
+        visitWindow.discardAll()
         locationService.suspendForCounterpartyChange()
         photoService.suspendForCounterpartyChange()
         sharingPreferences.scope(to: counterpartyID)
