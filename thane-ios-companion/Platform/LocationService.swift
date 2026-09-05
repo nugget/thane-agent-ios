@@ -185,6 +185,23 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     /// Called from the local background-sharing toggle. Creating an Always
     /// service session here lets iOS present any authorization upgrade while
     /// the operator is visibly using the app; a remote request never does so.
+    func setVisitMonitoringEnabled(_ enabled: Bool) {
+        authorizationStatus = manager.authorizationStatus
+        preferences.visitsEnabled = enabled
+        if enabled {
+            guard preferences.locationEnabled else {
+                preferences.visitsEnabled = false
+                return
+            }
+            reconcileBackgroundMonitoring(allowAuthorizationRequest: true)
+            reportVisitsUnavailableIfNeeded()
+        } else {
+            stopVisitMonitoring()
+            invalidateAuthorizationSessionIfUnused()
+            reportedVisitsUnavailable = false
+        }
+    }
+
     func setBackgroundMonitoringEnabled(_ enabled: Bool) {
         authorizationStatus = manager.authorizationStatus
         preferences.backgroundLocationEnabled = enabled

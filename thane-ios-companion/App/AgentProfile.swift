@@ -473,6 +473,21 @@ final class AgentProfile: Identifiable {
         }
     }
 
+    func setVisitSharing(enabled: Bool) {
+        guard sharingPreferences.counterpartyID == identityPinning.pin?.identityID,
+              sharingPreferences.counterpartyID != nil else {
+            configurationError = "Pin this agent before changing what is shared with it."
+            return
+        }
+        locationService.setVisitMonitoringEnabled(enabled)
+        if !enabled {
+            // Erase the on-device window as well as withdrawing, so nothing
+            // remains here to republish if it is switched back on.
+            visitWindow.discardAll()
+            observationPublisher.withdraw(.visits)
+        }
+    }
+
     func setPhotoSharing(enabled: Bool) async {
         configurationError = nil
         guard let counterpartyID = sharingPreferences.counterpartyID,

@@ -130,6 +130,19 @@ struct SharingView: View {
 
                 Divider()
 
+                Toggle(isOn: Binding(
+                    get: { profile.sharingPreferences.visitsEnabled },
+                    set: { profile.setVisitSharing(enabled: $0) }
+                )) {
+                    PreferenceLabel(
+                        title: "Visit History",
+                        detail: "Shares places you stayed, with arrival and departure times and how long you were there, for up to the last 48 hours and 16 places. This is a record of where you spend time, not a single position, and Thane keeps what it receives. Separate from Background Location Updates and off until you turn it on."
+                    )
+                }
+                .disabled(profile.locationService.authorizationStatus == .notDetermined)
+
+                Divider()
+
                 OperationalRow(
                     title: "Permission",
                     value: locationPermissionLabel,

@@ -228,6 +228,50 @@ struct VisitMonitoringTests {
         #expect(service.isVisitMonitoringActive == false)
     }
 
+    /// The toggle is the whole point of an independent category: turning it
+    /// off must stop the system delivering visits, not merely stop publishing
+    /// them, because monitoring is process-wide and outlives the app.
+    @Test("Turning Visit History off stops monitoring and releases the session")
+    func togglingOffStopsMonitoring() throws {
+        let fixture = try PreferencesFixture()
+        defer { fixture.cleanup() }
+        let manager = FakeLocationManager(authorizationStatus: .authorizedAlways)
+        let session = FakeAuthorizationSession()
+        let service = LocationService(
+            preferences: fixture.preferences,
+            manager: manager,
+            authorizationSessionFactory: { session }
+        )
+
+        fixture.preferences.locationEnabled = true
+        service.setVisitMonitoringEnabled(true)
+        #expect(service.isVisitMonitoringActive)
+
+        service.setVisitMonitoringEnabled(false)
+
+        #expect(service.isVisitMonitoringActive == false)
+        #expect(manager.stopVisitsCount >= 1)
+        #expect(fixture.preferences.visitsEnabled == false)
+        // Nothing else wanted Always, so the session goes with it.
+        #expect(session.invalidateCount == 1)
+    }
+
+    /// Enabling visits without the parent must not arm anything.
+    @Test("Visit History cannot be enabled without Location")
+    func togglingRequiresLocation() throws {
+        let fixture = try PreferencesFixture()
+        defer { fixture.cleanup() }
+        let manager = FakeLocationManager(authorizationStatus: .authorizedAlways)
+        let service = LocationService(preferences: fixture.preferences, manager: manager)
+
+        fixture.preferences.locationEnabled = false
+        service.setVisitMonitoringEnabled(true)
+
+        #expect(fixture.preferences.visitsEnabled == false)
+        #expect(service.isVisitMonitoringActive == false)
+        #expect(manager.startVisitsCount == 0)
+    }
+
     /// A visit can arrive "possibly from a prior launch", so consent is
     /// re-checked at delivery rather than assumed from whatever armed it.
     @Test("The tool refuses when visit sharing is off")
