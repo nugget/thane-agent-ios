@@ -16,19 +16,30 @@ import Foundation
 final class VisitWindowStore {
     private let fileURL: URL
     private var visits: [VisitSnapshot] = []
-    /// Set when the cap discards a visit, so the published window can say so.
-    private var droppedSinceLastWindow = false
+    /// The anchor of the newest visit the cap discarded.
+    ///
+    /// A bare in-memory flag was wrong twice over: it reset on relaunch, so a
+    /// reloaded window under-reported, and it never expired, so once set every
+    /// future window claimed truncation long after the dropped visit had aged
+    /// out. Storing the anchor makes the answer both durable and cutoff-aware.
+    private var lastDroppedAnchor: Date?
 
     init(profileID: String, storageDirectoryURL: URL? = nil) {
         let directory = (try? storageDirectoryURL ?? Self.defaultStorageDirectoryURL())
             ?? FileManager.default.temporaryDirectory
         fileURL = Self.profileFileURL(profileID: profileID, storageDirectoryURL: directory)
-        visits = (try? load()) ?? []
+        restore()
     }
 
     init(fileURL: URL) {
         self.fileURL = fileURL
-        visits = (try? load()) ?? []
+        restore()
+    }
+
+    private func restore() {
+        guard let stored = try? load() else { return }
+        visits = stored.visits
+        lastDroppedAnchor = stored.lastDroppedAnchor
     }
 
     /// Records a visit and returns the window to publish.
@@ -65,10 +76,11 @@ final class VisitWindowStore {
             windowHours: VisitWindowSnapshot.windowHours,
             maxEntries: VisitWindowSnapshot.maxEntries,
             returnedCount: kept.count,
-            // Reported from what was actually dropped, counted before the cap.
-            // Deriving it here from the already-capped store made it
-            // permanently false, so a reader could not tell history was omitted.
-            truncated: droppedSinceLastWindow || ordered.count > kept.count,
+            // True only when something was dropped that would still belong to
+            // this window. Deriving it from the already-capped store made it
+            // permanently false; an unexpiring flag made it permanently true.
+            truncated: (lastDroppedAnchor.map { $0 >= cutoff } ?? false)
+                || ordered.count > kept.count,
             visits: kept
         )
     }
@@ -86,7 +98,7 @@ final class VisitWindowStore {
     @discardableResult
     func discardAll() -> Bool {
         visits = []
-        droppedSinceLastWindow = false
+        lastDroppedAnchor = nil
         do {
             if FileManager.default.fileExists(atPath: fileURL.path) {
                 try FileManager.default.removeItem(at: fileURL)
@@ -102,19 +114,29 @@ final class VisitWindowStore {
         let cutoff = now.addingTimeInterval(-VisitWindowSnapshot.windowHours * 3600)
         visits.removeAll { $0.anchorDate < cutoff }
         if visits.count > VisitWindowSnapshot.maxEntries {
-            // Record the loss before it is unobservable. Capping here is what
-            // makes `ordered.count > kept.count` false at read time.
-            droppedSinceLastWindow = true
-            visits = Array(
-                visits.sorted { $0.anchorDate > $1.anchorDate }
-                    .prefix(VisitWindowSnapshot.maxEntries)
-            )
+            // Record what was lost before it becomes unobservable. Capping
+            // here is what makes `ordered.count > kept.count` false at read.
+            let ordered = visits.sorted { $0.anchorDate > $1.anchorDate }
+            if let newestDropped = ordered.dropFirst(VisitWindowSnapshot.maxEntries).first {
+                lastDroppedAnchor = max(lastDroppedAnchor ?? .distantPast, newestDropped.anchorDate)
+            }
+            visits = Array(ordered.prefix(VisitWindowSnapshot.maxEntries))
         }
     }
 
-    private func load() throws -> [VisitSnapshot] {
+    private struct StoredWindow: Codable {
+        var visits: [VisitSnapshot]
+        var lastDroppedAnchor: Date?
+
+        enum CodingKeys: String, CodingKey {
+            case visits
+            case lastDroppedAnchor = "last_dropped_anchor"
+        }
+    }
+
+    private func load() throws -> StoredWindow {
         let data = try Data(contentsOf: fileURL)
-        return try ObservationCoding.decoder().decode([VisitSnapshot].self, from: data)
+        return try ObservationCoding.decoder().decode(StoredWindow.self, from: data)
     }
 
     private func persist() throws {
@@ -122,7 +144,9 @@ final class VisitWindowStore {
             at: fileURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        let data = try ObservationCoding.encoder().encode(visits)
+        let data = try ObservationCoding.encoder().encode(
+            StoredWindow(visits: visits, lastDroppedAnchor: lastDroppedAnchor)
+        )
         try data.write(
             to: fileURL,
             options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]

@@ -298,6 +298,80 @@ struct VisitMonitoringTests {
         #expect(withdrawals == 1)
     }
 
+    // MARK: - Second review pass
+
+    /// `visitsEnabled` stays true through an OS downgrade — the operator did
+    /// not revoke, iOS did — so consent alone is not enough to accept a
+    /// callback queued before the downgrade.
+    @Test("A visit delivered after an authorization downgrade is refused")
+    func lateVisitAfterDowngradeIsRefused() throws {
+        let fixture = try PreferencesFixture()
+        defer { fixture.cleanup() }
+        let manager = FakeLocationManager(authorizationStatus: .authorizedAlways)
+        let service = LocationService(preferences: fixture.preferences, manager: manager)
+        var delivered = 0
+        service.onVisit = { _ in delivered += 1 }
+
+        fixture.preferences.locationEnabled = true
+        service.setVisitMonitoringEnabled(true)
+
+        manager.authorizationStatus = .authorizedWhenInUse
+        service.locationManager(CLLocationManager(), didVisit: StubVisit())
+
+        #expect(delivered == 0)
+        #expect(manager.stopVisitsCount >= 1)
+    }
+
+    /// Turning Background Location off must not revoke Always out from under
+    /// visits. Third instance of the shared-session mistake, in the last path
+    /// that still had it.
+    @Test("Turning background location off keeps the session for visits")
+    func backgroundOffKeepsSessionForVisits() throws {
+        let fixture = try PreferencesFixture()
+        defer { fixture.cleanup() }
+        let manager = FakeLocationManager(authorizationStatus: .authorizedAlways)
+        let session = FakeAuthorizationSession()
+        let service = LocationService(
+            preferences: fixture.preferences,
+            manager: manager,
+            authorizationSessionFactory: { session }
+        )
+
+        fixture.preferences.locationEnabled = true
+        service.setVisitMonitoringEnabled(true)
+        service.setBackgroundMonitoringEnabled(true)
+
+        service.setBackgroundMonitoringEnabled(false)
+
+        #expect(service.isVisitMonitoringActive)
+        #expect(session.invalidateCount == 0)
+    }
+
+    /// Truncation has to survive a relaunch and expire with the window it
+    /// describes: a flag did neither.
+    @Test("Truncation survives a relaunch and ages out with the window")
+    func truncationIsDurableAndExpires() throws {
+        let url = Self.tempFile()
+        let now = Date()
+        let store = VisitWindowStore(fileURL: url)
+        for i in 0...VisitWindowSnapshot.maxEntries {
+            _ = store.record(try #require(VisitSnapshot.make(
+                coordinate: CLLocationCoordinate2D(latitude: 29.8 + Double(i) / 1000, longitude: -98.4),
+                horizontalAccuracy: 10,
+                arrivalDate: now.addingTimeInterval(Double(i) * 60 - 3600),
+                departureDate: now.addingTimeInterval(Double(i) * 60),
+                capturedAt: now
+            )), now: now)
+        }
+
+        let relaunched = VisitWindowStore(fileURL: url)
+        defer { relaunched.discardAll() }
+        #expect(relaunched.window(now: now).truncated)
+
+        let afterWindow = now.addingTimeInterval(VisitWindowSnapshot.windowHours * 3600 + 60)
+        #expect(relaunched.window(now: afterWindow).truncated == false)
+    }
+
     // MARK: - Consent and the shared Always session
 
     /// Visit monitoring is process-wide and, per the SDK, continues "even
@@ -434,4 +508,16 @@ struct VisitMonitoringTests {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("visits-\(UUID().uuidString).json")
     }
+}
+
+
+/// `CLVisit` has no public initialiser, so a delegate-level test needs a
+/// subclass overriding the four values it carries.
+private final class StubVisit: CLVisit {
+    override var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: 29.8312, longitude: -98.4643)
+    }
+    override var horizontalAccuracy: CLLocationAccuracy { 10 }
+    override var arrivalDate: Date { Date().addingTimeInterval(-3600) }
+    override var departureDate: Date { Date() }
 }

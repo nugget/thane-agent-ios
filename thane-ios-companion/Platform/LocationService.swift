@@ -214,7 +214,12 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
             reportBackgroundUnavailableIfNeeded()
         } else {
             reportedBackgroundUnavailable = false
-            stopBackgroundMonitoring(invalidateSession: true)
+            // Not invalidateSession: true. Visits may still hold Always, and
+            // tearing the session down here revoked it out from under them —
+            // the same shared-resource mistake as the reconcile entry guard,
+            // in the one path that had not been fixed.
+            stopBackgroundMonitoring(invalidateSession: false)
+            invalidateAuthorizationSessionIfUnused()
         }
     }
 
@@ -336,7 +341,15 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         // Per the SDK a visit may arrive "possibly from a prior launch", so
         // consent is re-checked here rather than assumed from whatever armed
         // monitoring.
-        guard preferences.locationEnabled, preferences.visitsEnabled else {
+        // Authorization is checked as well as consent. `visitsEnabled` stays
+        // true through an OS downgrade — the operator did not revoke, iOS did —
+        // so a callback queued before the downgrade, possibly from a prior
+        // launch, would otherwise repopulate and republish a window the
+        // authorization-change path had just withdrawn.
+        authorizationStatus = manager.authorizationStatus
+        guard preferences.locationEnabled,
+              preferences.visitsEnabled,
+              authorizationStatus == .authorizedAlways else {
             stopVisitMonitoring()
             return
         }

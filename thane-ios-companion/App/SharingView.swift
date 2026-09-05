@@ -271,8 +271,12 @@ struct SharingView: View {
         }
     }
 
+    /// Either Always consumer stranded at When In Use needs the same route
+    /// out. Keyed to background location alone, an operator who enabled only
+    /// Visit History and declined the upgrade had no way back.
     private var backgroundPermissionNeedsSettings: Bool {
-        profile.sharingPreferences.backgroundLocationEnabled
+        (profile.sharingPreferences.backgroundLocationEnabled
+            || profile.sharingPreferences.visitsEnabled)
             && profile.locationService.authorizationStatus != .authorizedAlways
             && profile.locationService.authorizationStatus != .notDetermined
     }
