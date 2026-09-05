@@ -90,8 +90,9 @@ final class AgentProfile: Identifiable {
         self.locationService = locationService
         self.photoService = photoService
 
-        locationService.onSignificantLocation = { [weak observationPublisher] snapshot in
+        locationService.onSignificantLocation = { [weak self, weak observationPublisher] snapshot in
             observationPublisher?.publishLocation(snapshot)
+            self?.refreshIdentityOpportunistically()
         }
         locationService.onBackgroundLocationUnavailable = { [weak observationPublisher] in
             observationPublisher?.withdraw(.location)
@@ -139,6 +140,14 @@ final class AgentProfile: Identifiable {
             self?.refreshIdentityBeforeReconnect()
         }
         identityService.onEvidenceUpdated = { [weak self] evidence in
+            // Persist before reconciling: a later launch with no scene reads
+            // this snapshot to decide whether it may deliver at all.
+            // Bound to the endpoint it came from: the connection ID that
+            // scopes its Keychain account survives a URL edit, so the address
+            // has to travel with the snapshot.
+            if let source = self?.identityService.sourceURL {
+                self?.identityPinning.storeEvidence(evidence, from: source)
+            }
             self?.scheduleIdentityRefreshDeadline(for: evidence)
             self?.reconcileIdentityBoundary()
         }
@@ -496,9 +505,7 @@ final class AgentProfile: Identifiable {
             )
             return
         }
-        guard connectionSettings.isEnabled,
-              identityContinuity.permitsPrivateDelivery,
-              let evidence = presentedIdentity else {
+        guard connectionSettings.isEnabled else {
             observationPublisher.configure(
                 baseURL: nil,
                 token: nil,
@@ -508,15 +515,66 @@ final class AgentProfile: Identifiable {
             )
             return
         }
-        observationPublisher.configure(
-            baseURL: connectionSettings.serverURL,
-            token: tokenInput,
-            clientID: connectionSettings.pairwiseClientID,
-            deliveryScope: observationDeliveryScope,
-            authorizationExpiresAt: evidence.observedAt.addingTimeInterval(
-                IdentityContinuityState.maximumEvidenceAge
+
+        // Live evidence, verified this session. Unchanged: the fifteen-minute
+        // window still governs a foreground app that can refresh at will.
+        if identityContinuity.permitsPrivateDelivery, let evidence = presentedIdentity {
+            observationPublisher.configure(
+                baseURL: connectionSettings.serverURL,
+                token: tokenInput,
+                clientID: connectionSettings.pairwiseClientID,
+                deliveryScope: observationDeliveryScope,
+                authorizationExpiresAt: evidence.observedAt.addingTimeInterval(
+                    IdentityContinuityState.maximumEvidenceAge
+                )
             )
+            return
+        }
+
+        // No live evidence. A process launched by Core Location has no scene
+        // and cannot fetch any, so refusing here is what made a wake record
+        // and never send. The stored snapshot still has to match the pin —
+        // continuity is intact and this phone cannot be pointed at a
+        // different Thane — only recency is relaxed, to the ceiling.
+        if let restored = identityPinning.restoredEvidence(for: connectionSettings.serverURL) {
+            observationPublisher.configure(
+                baseURL: connectionSettings.serverURL,
+                token: tokenInput,
+                clientID: connectionSettings.pairwiseClientID,
+                deliveryScope: observationDeliveryScope,
+                // From verifiedAt, stamped by this device, not from the
+                // server-supplied observedAt.
+                authorizationExpiresAt: restored.verifiedAt.addingTimeInterval(
+                    IdentityContinuityState.maximumStoredEvidenceAge
+                )
+            )
+            return
+        }
+
+        observationPublisher.configure(
+            baseURL: nil,
+            token: nil,
+            clientID: "",
+            deliveryScope: observationDeliveryScope,
+            authorizationExpiresAt: nil
         )
+    }
+
+    /// Tries to freshen identity evidence from a background wake.
+    ///
+    /// Deliberately not `refreshIdentityForConfiguredConnection`, which
+    /// suspends delivery *before* fetching: on a wake with no route — which
+    /// is exactly when a wake is likely to fire — that would tear down the
+    /// destination this snapshot just authorised. On success the live path
+    /// takes over and the window narrows back to fifteen minutes; on failure
+    /// the stored snapshot continues to authorise delivery.
+    private func refreshIdentityOpportunistically() {
+        guard connectionSettings.isEnabled,
+              identityContinuity.permitsPrivateDelivery == false,
+              let url = connectionSettings.serverURL else { return }
+        let token = tokenInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { return }
+        identityService.refresh(from: url, token: token)
     }
 
     private func applySharingScope(_ counterpartyID: String?) {
@@ -544,11 +602,24 @@ final class AgentProfile: Identifiable {
         }
         guard identityContinuity.permitsPrivateDelivery,
               let url = connectionSettings.serverURL else {
-            suspendPrivateDelivery()
+            connection.disconnect()
             if identityContinuity == .mismatch {
+                // A different identity is presenting itself. The stored
+                // snapshot still matches the pin, so falling back to it here
+                // would paper over exactly the thing worth refusing.
+                suspendObservationDelivery()
                 let name = identityPinning.pin?.nameAtPinning ?? "the pinned agent"
                 configurationError = "The presented identity does not match \(name)'s pin on this iPhone. Private delivery is blocked."
-            } else if identityContinuity == .stale {
+                return
+            }
+            // No live evidence (a fetch that failed, or a launch with no
+            // scene) or evidence merely gone stale. Re-derive the
+            // destination rather than clearing it: configureObservationPublisher
+            // falls back to the stored snapshot, which is what a background
+            // wake depends on and what an opportunistic refresh must not be
+            // able to destroy by failing.
+            configureObservationPublisher()
+            if identityContinuity == .stale {
                 configurationError = "Identity evidence is more than 15 minutes old. Refresh it before private delivery resumes."
             }
             return

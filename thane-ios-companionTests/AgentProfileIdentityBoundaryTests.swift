@@ -443,6 +443,28 @@ struct AgentProfileIdentityBoundaryTests {
         #expect(fixture.profile.displayedError != nil)
     }
 
+    private static func backgroundFix() -> LocationSnapshot {
+        LocationSnapshot(
+            capturedAt: "2026-09-01T12:00:00Z",
+            locationTimestamp: "2026-09-01T12:00:00Z",
+            latitude: 41.88,
+            longitude: -87.63,
+            altitudeMeters: nil,
+            ellipsoidalAltitudeMeters: nil,
+            horizontalAccuracyMeters: 5,
+            verticalAccuracyMeters: nil,
+            speedMetersPerSecond: nil,
+            speedAccuracyMetersPerSecond: nil,
+            courseDegrees: nil,
+            courseAccuracyDegrees: nil,
+            floor: nil,
+            authorization: "always",
+            accuracyAuthorization: "full",
+            simulatedBySoftware: false,
+            producedByAccessory: false
+        )
+    }
+
     private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async throws {
         for _ in 0..<100 {
             if condition() { return }
@@ -450,12 +472,127 @@ struct AgentProfileIdentityBoundaryTests {
         }
         Issue.record("Timed out waiting for app identity state")
     }
+
+    // MARK: - Background delivery on stored evidence
+
+    /// The outcome the whole change exists for: a process launched by Core
+    /// Location, with no scene and therefore no way to fetch fresh evidence,
+    /// still delivers. Before this it recorded and waited for a foreground
+    /// launch that might be days away.
+    @Test("A relaunch with stored evidence delivers without a live fetch")
+    func storedEvidenceAuthorisesBackgroundDelivery() async throws {
+        let evidence = try IdentityTestFixture.evidence(observedAt: Date())
+        let fixture = try AppIdentityFixture(
+            evidence: evidence,
+            pinnedEvidence: evidence,
+            storedEvidence: evidence,
+            connectionEnabled: true
+        )
+        defer { fixture.cleanup() }
+
+        // No activate(), no scene, no identity refresh — a background launch.
+        fixture.profile.observationPublisher.publishLocation(Self.backgroundFix())
+
+        try await waitUntil { fixture.uploader.callCount == 1 }
+        #expect(fixture.uploader.callCount == 1)
+    }
+
+    /// Drives the real `onSignificantLocation` callback with a fetch that
+    /// fails, which is the wake this whole change targets: no scene, no route,
+    /// stored evidence only.
+    ///
+    /// Calling the publisher directly would not exercise the callback or its
+    /// opportunistic refresh, and would stay green while the refresh's failure
+    /// path tore down the destination the snapshot had just authorised.
+    @Test("A wake whose identity refresh fails still delivers on stored evidence")
+    func failedOpportunisticRefreshPreservesDelivery() async throws {
+        let evidence = try IdentityTestFixture.evidence(observedAt: Date())
+        let fetcher = AppIdentityFetcher(evidence: evidence)
+        fetcher.result = .failure(AppIdentityTestError.expectedFailure)
+        let fixture = try AppIdentityFixture(
+            evidence: evidence,
+            pinnedEvidence: evidence,
+            storedEvidence: evidence,
+            identityService: IdentityService(fetcher: fetcher),
+            connectionEnabled: true
+        )
+        defer { fixture.cleanup() }
+
+        let callback = try #require(fixture.profile.locationService.onSignificantLocation)
+        callback(Self.backgroundFix())
+
+        try await waitUntil { fixture.uploader.callCount == 1 }
+        #expect(fixture.uploader.callCount == 1)
+    }
+
+    /// The regression the endpoint binding exists for: a pinned operator edits
+    /// the server URL, the refresh against the new address fails, and the
+    /// fallback must not hand queued private data to an endpoint nothing has
+    /// verified. The connection ID — and so the Keychain account holding the
+    /// snapshot — survives that edit, so identity matching alone would let it
+    /// through.
+    @Test("An edited URL plus a failed refresh does not deliver on old evidence")
+    func editedEndpointDoesNotInheritStoredEvidence() async throws {
+        let evidence = try IdentityTestFixture.evidence(observedAt: Date())
+        let fetcher = AppIdentityFetcher(evidence: evidence)
+        fetcher.result = .failure(AppIdentityTestError.expectedFailure)
+        let fixture = try AppIdentityFixture(
+            evidence: evidence,
+            pinnedEvidence: evidence,
+            storedEvidence: evidence,
+            storedEvidenceSourceURL: URL(string: "https://previous.example"),
+            identityService: IdentityService(fetcher: fetcher),
+            connectionEnabled: true
+        )
+        defer { fixture.cleanup() }
+
+        let callback = try #require(fixture.profile.locationService.onSignificantLocation)
+        callback(Self.backgroundFix())
+
+        try await waitUntil { fixture.profile.observationPublisher.pendingCount == 1 }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(fixture.uploader.callCount == 0)
+        #expect(fixture.profile.observationPublisher.pendingCount == 1)
+    }
+
+    /// The ceiling is load-bearing, not decorative.
+    @Test("A relaunch with expired stored evidence records but does not deliver")
+    func expiredStoredEvidenceBlocksBackgroundDelivery() async throws {
+        let evidence = try IdentityTestFixture.evidence(observedAt: Date())
+        let fixture = try AppIdentityFixture(
+            evidence: evidence,
+            pinnedEvidence: evidence,
+            storedEvidence: evidence,
+            storedEvidenceVerifiedAt: Date()
+                .addingTimeInterval(-IdentityContinuityState.maximumStoredEvidenceAge - 60),
+            connectionEnabled: true
+        )
+        defer { fixture.cleanup() }
+
+        fixture.profile.observationPublisher.publishLocation(Self.backgroundFix())
+
+        try await waitUntil { fixture.profile.observationPublisher.pendingCount == 1 }
+        // Settle before asserting the negative. Enqueue calls flush on its own
+        // tail, so checking the moment the event lands would pass whether or
+        // not delivery was blocked — the same race that let the old
+        // capture-gate test assert the wrong thing and stay green.
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(fixture.uploader.callCount == 0)
+        #expect(fixture.profile.observationPublisher.pendingCount == 1)
+    }
+
 }
 
 @MainActor
 private final class AppIdentityFixture {
+    /// The endpoint this fixture's profile is configured against. Named so a
+    /// stored snapshot can be seeded for it, or deliberately for a different
+    /// one, without a force-unwrap or a literal repeated in two places.
+    static let defaultEndpoint = URL(string: "https://thane.example")!
+
     let profile: AgentProfile
     let secureStore: AppIdentitySecureStore
+    let uploader: AppIdentityUploader
 
     private let suite: String
     private let defaults: UserDefaults
@@ -464,6 +601,9 @@ private final class AppIdentityFixture {
     init(
         evidence: ThaneIdentityEvidence,
         pinnedEvidence: ThaneIdentityEvidence? = nil,
+        storedEvidence: ThaneIdentityEvidence? = nil,
+        storedEvidenceVerifiedAt: Date? = nil,
+        storedEvidenceSourceURL: URL? = nil,
         identityService: IdentityService? = nil,
         connectionEnabled: Bool = false,
         photoLibrary: (any PhotoLibraryReading)? = nil
@@ -490,13 +630,27 @@ private final class AppIdentityFixture {
         if let pinnedEvidence {
             try pinning.pin(pinnedEvidence)
         }
-        settings.urlString = "https://thane.example"
+        // Set the endpoint before seeding, so a snapshot defaults to the
+        // address this profile will actually use.
+        settings.urlString = Self.defaultEndpoint.absoluteString
+        // Seeded before AgentProfile is built, so its init sees exactly what a
+        // process launched by Core Location sees: a pin and a stored snapshot
+        // in the Keychain, and no live evidence anywhere.
+        if let storedEvidence {
+            pinning.storeEvidence(
+                storedEvidence,
+                from: storedEvidenceSourceURL ?? Self.defaultEndpoint,
+                verifiedAt: storedEvidenceVerifiedAt ?? Date()
+            )
+        }
         settings.isEnabled = connectionEnabled
+        let uploader = AppIdentityUploader()
+        self.uploader = uploader
         let publisher = ObservationPublisher(
             outbox: ObservationOutbox(
                 fileURL: directoryURL.appendingPathComponent("outbox.json")
             ),
-            uploader: AppIdentityUploader()
+            uploader: uploader
         )
         let inboxStore = InboxStore(
             profileID: settings.profileID,
@@ -590,12 +744,15 @@ private enum AppIdentityTestError: Error {
 
 @MainActor
 private final class AppIdentityUploader: ObservationUploading {
+    private(set) var callCount = 0
+
     func upload(
         _ batch: ObservationBatch,
         to baseURL: URL,
         token: String
     ) async throws -> ObservationIngestResult {
-        ObservationIngestResult(stored: batch.events.count, ignored: 0, receivedAt: Date())
+        callCount += 1
+        return ObservationIngestResult(stored: batch.events.count, ignored: 0, receivedAt: Date())
     }
 }
 

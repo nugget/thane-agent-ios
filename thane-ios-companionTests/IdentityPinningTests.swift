@@ -6,6 +6,7 @@ import Testing
 @MainActor
 struct IdentityPinningTests {
     private let connectionID = "connection-one"
+    private let endpoint = URL(string: "https://thane.example")!
 
     @Test("A pin persists the exact stable identity material")
     func persistenceAndMatching() throws {
@@ -222,6 +223,127 @@ struct IdentityPinningTests {
         try service.forget()
         try service.pin(evidence)
         #expect(service.pin?.matches(evidence) == true)
+    }
+
+    // MARK: - Stored evidence for background delivery
+
+    /// A process launched by Core Location has no scene and cannot fetch
+    /// identity evidence. The stored snapshot is what lets it decide whether
+    /// it may deliver at all.
+    @Test("Stored evidence is restored when it matches the pin and is inside the ceiling")
+    func storedEvidenceRestores() throws {
+        let evidence = try IdentityTestFixture.evidence(observedAt: Date())
+        let store = IdentityPinTestStore()
+        let service = IdentityPinningService(connectionID: connectionID, secureStore: store)
+        try service.pin(evidence)
+        service.storeEvidence(evidence, from: endpoint)
+
+        let relaunched = IdentityPinningService(connectionID: connectionID, secureStore: store)
+        let restored = try #require(relaunched.restoredEvidence(for: endpoint))
+        #expect(restored.evidence.instance.id == evidence.instance.id)
+        #expect(store.savedAccounts.contains("thane-identity-evidence.connection-one"))
+    }
+
+    /// The ceiling is the whole of what this relaxation costs: an identity
+    /// rotated or revoked goes unnoticed by a phone that never reaches the
+    /// foreground, but only for this long.
+    @Test("Stored evidence past the ceiling stops authorising delivery")
+    func storedEvidenceExpires() throws {
+        let store = IdentityPinTestStore()
+        let service = IdentityPinningService(connectionID: connectionID, secureStore: store)
+        let old = try IdentityTestFixture.evidence(observedAt: Date())
+        try service.pin(old)
+        // Aged by when this device verified it, which is the only clock the
+        // ceiling is allowed to trust.
+        service.storeEvidence(
+            old,
+            from: endpoint,
+            verifiedAt: Date().addingTimeInterval(-IdentityContinuityState.maximumStoredEvidenceAge - 60)
+        )
+
+        #expect(service.restoredEvidence(for: endpoint) == nil)
+    }
+
+    /// Continuity is *not* relaxed. Only recency is. A snapshot that does not
+    /// match the pin authorises nothing, so this phone cannot be pointed at a
+    /// different Thane by anything held on the device.
+    /// The ceiling has to be measured by a clock this device controls. If it
+    /// ran from the server-supplied observedAt, a future timestamp would
+    /// produce a negative age, pass any bound, and authorise delivery until
+    /// that timestamp plus the ceiling.
+    @Test("A future server timestamp cannot extend the ceiling")
+    func futureObservedAtCannotExtendTheCeiling() throws {
+        let store = IdentityPinTestStore()
+        let service = IdentityPinningService(connectionID: connectionID, secureStore: store)
+        let farFuture = try IdentityTestFixture.evidence(
+            observedAt: Date().addingTimeInterval(365 * 24 * 60 * 60)
+        )
+        try service.pin(farFuture)
+
+        // Verified long ago by this device, whatever the server claims.
+        service.storeEvidence(
+            farFuture,
+            from: endpoint,
+            verifiedAt: Date().addingTimeInterval(-IdentityContinuityState.maximumStoredEvidenceAge - 60)
+        )
+
+        #expect(service.restoredEvidence(for: endpoint) == nil)
+    }
+
+    @Test("Stored evidence that does not match the pin is refused")
+    func storedEvidenceMustMatchPin() throws {
+        let store = IdentityPinTestStore()
+        let service = IdentityPinningService(connectionID: connectionID, secureStore: store)
+        let pinned = try IdentityTestFixture.evidence(observedAt: Date())
+        try service.pin(pinned)
+
+        let impostor = replacingInstance(
+            in: pinned,
+            with: ThaneInstanceIdentity(
+                id: "thane:ed25519:SHA256:someone-else",
+                name: pinned.instance.name,
+                identityKey: pinned.instance.identityKey,
+                channelCA: pinned.instance.channelCA
+            )
+        )
+        service.storeEvidence(impostor, from: endpoint)
+
+        #expect(service.restoredEvidence(for: endpoint) == nil)
+    }
+
+    /// The pin binds the snapshot to an identity; nothing binds it to an
+    /// address, and the connection ID scoping its Keychain account survives an
+    /// edit to the server URL. Without the endpoint check, evidence verified
+    /// against one Thane would authorise delivery to whatever URL was typed in
+    /// next, as soon as a refresh against that URL failed.
+    @Test("Stored evidence does not authorise a different endpoint")
+    func storedEvidenceIsBoundToItsEndpoint() throws {
+        let evidence = try IdentityTestFixture.evidence(observedAt: Date())
+        let store = IdentityPinTestStore()
+        let service = IdentityPinningService(connectionID: connectionID, secureStore: store)
+        try service.pin(evidence)
+        service.storeEvidence(evidence, from: endpoint)
+
+        let elsewhere = try #require(URL(string: "https://someone-else.example"))
+        #expect(service.restoredEvidence(for: elsewhere) == nil)
+        #expect(service.restoredEvidence(for: nil) == nil)
+        #expect(service.restoredEvidence(for: endpoint) != nil)
+    }
+
+    @Test("Forgetting an agent removes its stored evidence")
+    func forgettingRemovesStoredEvidence() throws {
+        let evidence = try IdentityTestFixture.evidence(observedAt: Date())
+        let store = IdentityPinTestStore()
+        let service = IdentityPinningService(connectionID: connectionID, secureStore: store)
+        try service.pin(evidence)
+        service.storeEvidence(evidence, from: endpoint)
+        #expect(service.restoredEvidence(for: endpoint) != nil)
+
+        try service.forget()
+
+        let relaunched = IdentityPinningService(connectionID: connectionID, secureStore: store)
+        #expect(relaunched.restoredEvidence(for: endpoint) == nil)
+        #expect(store.value(account: "thane-identity-evidence.connection-one") == nil)
     }
 
     private func replacingInstance(

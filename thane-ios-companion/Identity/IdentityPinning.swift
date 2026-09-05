@@ -45,8 +45,39 @@ private extension PublicIdentityMaterial {
     }
 }
 
+/// An identity snapshot together with the local time this device verified
+/// it. The pairing matters: the ceiling is measured from `verifiedAt`, which
+/// this device stamps, never from the server-supplied `observedAt`.
+nonisolated struct StoredIdentityEvidence: Codable, Equatable, Sendable {
+    let evidence: ThaneIdentityEvidence
+    let verifiedAt: Date
+    /// The endpoint this evidence was fetched from. The pin binds the
+    /// snapshot to an *identity*; nothing binds it to an *address*, and the
+    /// connection ID that scopes its Keychain account survives an edit to the
+    /// server URL. Without this, evidence verified against one endpoint could
+    /// authorise delivery to another.
+    let sourceURL: URL
+
+    enum CodingKeys: String, CodingKey {
+        case evidence
+        case verifiedAt = "verified_at"
+        case sourceURL = "source_url"
+    }
+}
+
 nonisolated enum IdentityContinuityState: Equatable, Sendable {
     static let maximumEvidenceAge: TimeInterval = 15 * 60
+
+    /// How long a *stored* evidence snapshot may authorise delivery when no
+    /// fresh fetch is possible.
+    ///
+    /// A background launch has no scene, so it cannot obtain recency at all.
+    /// Refusing on that basis meant a wake recorded and never sent. This
+    /// relaxes recency only: the snapshot must still match the pin, so the
+    /// phone cannot be redirected to a different Thane. What it gives up is
+    /// promptness — an identity rotated or revoked goes unnoticed by a phone
+    /// that never reaches the foreground for up to this long.
+    static let maximumStoredEvidenceAge: TimeInterval = 7 * 24 * 60 * 60
 
     case notPinned
     case presented
@@ -146,6 +177,10 @@ final class IdentityPinningService {
     func forget() throws {
         try secureStore.delete(account: securityScope.identityPinAccount)
         try secureStore.delete(account: ConnectionSecurityScope.legacyIdentityPinAccount)
+        // Propagated, not swallowed: reporting a successful forget while the
+        // snapshot survives in the Keychain is exactly the failure the
+        // operator would never find out about.
+        try secureStore.delete(account: securityScope.identityEvidenceAccount)
         pin = nil
         blockingError = nil
         lastError = nil
@@ -177,6 +212,66 @@ final class IdentityPinningService {
 
     private var securityScope: ConnectionSecurityScope {
         ConnectionSecurityScope(connectionID: connectionID)
+    }
+
+    /// Persists the evidence behind the same accessibility class as the
+    /// token: readable after first unlock, which is the window a background
+    /// wake actually runs in, and never synced off this device.
+    ///
+    /// `verifiedAt` is stamped here, locally, and is what the ceiling runs
+    /// from. `evidence.observedAt` is a value the server chose: a future one
+    /// would produce a negative age, pass any age check, and authorise
+    /// delivery until that timestamp plus the ceiling. The bound has to come
+    /// from a clock this device controls.
+    func storeEvidence(
+        _ evidence: ThaneIdentityEvidence,
+        from sourceURL: URL,
+        verifiedAt: Date = Date()
+    ) {
+        do {
+            let record = StoredIdentityEvidence(
+                evidence: evidence,
+                verifiedAt: verifiedAt,
+                sourceURL: sourceURL
+            )
+            let data = try JSONEncoder().encode(record)
+            try secureStore.save(
+                String(decoding: data, as: UTF8.self),
+                account: securityScope.identityEvidenceAccount
+            )
+        } catch {
+            // Not fatal: the next foreground activation fetches evidence
+            // again. Losing the snapshot costs background delivery, not
+            // correctness.
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// The stored snapshot, if it still matches the pin, was fetched from the
+    /// endpoint delivery is about to use, and was verified inside the ceiling.
+    /// Returns nil rather than throwing: an unreadable, redirected or expired
+    /// snapshot is simply an absent one.
+    ///
+    /// `serverURL` is required rather than optional-by-default so a caller
+    /// cannot reach this without deciding what endpoint it is authorising.
+    func restoredEvidence(for serverURL: URL?, now: Date = Date()) -> StoredIdentityEvidence? {
+        guard let pin, let serverURL else { return nil }
+        guard let raw = try? secureStore.load(account: securityScope.identityEvidenceAccount),
+              let record = try? JSONDecoder().decode(StoredIdentityEvidence.self, from: Data(raw.utf8)),
+              pin.matches(record.evidence),
+              record.sourceURL == serverURL,
+              record.verifiedAt <= now,
+              now.timeIntervalSince(record.verifiedAt) <= IdentityContinuityState.maximumStoredEvidenceAge
+        else {
+            return nil
+        }
+        return record
+    }
+
+    /// Removes the snapshot. Called wherever the pin itself is cleared, so a
+    /// forgotten agent leaves nothing behind that could authorise delivery.
+    func discardStoredEvidence() {
+        try? secureStore.delete(account: securityScope.identityEvidenceAccount)
     }
 
     private static func loadPin(
