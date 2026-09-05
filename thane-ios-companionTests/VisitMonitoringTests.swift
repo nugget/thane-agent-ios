@@ -160,6 +160,144 @@ struct VisitMonitoringTests {
         #expect(VisitWindowStore(fileURL: url).window().visits.isEmpty)
     }
 
+    // MARK: - Review findings
+
+    /// An ongoing stay that began days ago is current, not stale. Anchoring it
+    /// to its arrival pruned it on sight.
+    @Test("A long ongoing visit is not pruned as stale")
+    func longOngoingVisitSurvives() throws {
+        let store = VisitWindowStore(fileURL: Self.tempFile())
+        defer { store.discardAll() }
+        let now = Date()
+        let window = store.record(try #require(VisitSnapshot.make(
+            coordinate: ranch,
+            horizontalAccuracy: 10,
+            arrivalDate: now.addingTimeInterval(-72 * 3600),
+            departureDate: .distantFuture,
+            capturedAt: now
+        )), now: now)
+
+        #expect(window.visits.count == 1)
+        #expect(window.visits.first?.state == .ongoing)
+    }
+
+    /// Every missed arrival is nil, so keying replacement on it folded
+    /// unrelated visits into one.
+    @Test("Missed-arrival visits at one place do not collapse together")
+    func missedArrivalsDoNotCollide() throws {
+        let store = VisitWindowStore(fileURL: Self.tempFile())
+        defer { store.discardAll() }
+        let now = Date()
+
+        for offset in [-3600.0, -1800.0] {
+            _ = store.record(try #require(VisitSnapshot.make(
+                coordinate: ranch,
+                horizontalAccuracy: 10,
+                arrivalDate: .distantPast,
+                departureDate: now.addingTimeInterval(offset),
+                capturedAt: now.addingTimeInterval(offset)
+            )), now: now)
+        }
+
+        #expect(store.window(now: now).visits.count == 2)
+    }
+
+    /// Pruning ran only on write, so a file loaded at launch — or a quiet
+    /// 48 hours — returned entries older than the advertised window.
+    @Test("The window applies its cutoff on read, not only on write")
+    func windowCutoffAppliesOnRead() throws {
+        let url = Self.tempFile()
+        let store = VisitWindowStore(fileURL: url)
+        let recorded = Date()
+        _ = store.record(try #require(VisitSnapshot.make(
+            coordinate: ranch, horizontalAccuracy: 10,
+            arrivalDate: recorded.addingTimeInterval(-600),
+            departureDate: recorded, capturedAt: recorded
+        )), now: recorded)
+
+        let relaunched = VisitWindowStore(fileURL: url)
+        defer { relaunched.discardAll() }
+        let muchLater = recorded.addingTimeInterval(VisitWindowSnapshot.windowHours * 3600 + 60)
+
+        #expect(relaunched.window(now: muchLater).visits.isEmpty)
+    }
+
+    /// The cap trims before the window is built, so deriving truncation at
+    /// read time reported false however much had been dropped.
+    @Test("Dropping a visit to the cap is reported as truncated")
+    func truncationIsReported() throws {
+        let store = VisitWindowStore(fileURL: Self.tempFile())
+        defer { store.discardAll() }
+        let now = Date()
+
+        for i in 0...VisitWindowSnapshot.maxEntries {
+            _ = store.record(try #require(VisitSnapshot.make(
+                coordinate: CLLocationCoordinate2D(latitude: 29.8 + Double(i) / 1000, longitude: -98.4),
+                horizontalAccuracy: 10,
+                arrivalDate: now.addingTimeInterval(Double(i) * 60 - 3600),
+                departureDate: now.addingTimeInterval(Double(i) * 60),
+                capturedAt: now
+            )), now: now)
+        }
+
+        let window = store.window(now: now)
+        #expect(window.visits.count == VisitWindowSnapshot.maxEntries)
+        #expect(window.truncated)
+    }
+
+    @Test("Discarding removes the file, so a relaunch loads nothing")
+    func discardRemovesTheFile() throws {
+        let url = Self.tempFile()
+        let store = VisitWindowStore(fileURL: url)
+        _ = store.record(try #require(VisitSnapshot.make(
+            coordinate: ranch, horizontalAccuracy: 10,
+            arrivalDate: Date().addingTimeInterval(-600), departureDate: Date(), capturedAt: Date()
+        )))
+
+        #expect(store.discardAll())
+        #expect(FileManager.default.fileExists(atPath: url.path) == false)
+        #expect(VisitWindowStore(fileURL: url).window().visits.isEmpty)
+    }
+
+    /// Authorization changes reconciled only for significant changes, so a
+    /// visits-only operator granting Always started nothing.
+    @Test("An Always upgrade starts visits with background location off")
+    func alwaysUpgradeStartsVisitsOnly() throws {
+        let fixture = try PreferencesFixture()
+        defer { fixture.cleanup() }
+        let manager = FakeLocationManager(authorizationStatus: .authorizedWhenInUse)
+        let service = LocationService(preferences: fixture.preferences, manager: manager)
+
+        fixture.preferences.locationEnabled = true
+        fixture.preferences.backgroundLocationEnabled = false
+        fixture.preferences.visitsEnabled = true
+
+        manager.authorizationStatus = .authorizedAlways
+        service.locationManagerDidChangeAuthorization(CLLocationManager())
+
+        #expect(service.isVisitMonitoringActive)
+        #expect(manager.startVisitsCount >= 1)
+    }
+
+    /// Stopping delivery is not withdrawal: without the callback the server
+    /// kept serving the last visit and the window stayed on disk.
+    @Test("Revoking Location asks for visit withdrawal")
+    func revocationRequestsWithdrawal() throws {
+        let fixture = try PreferencesFixture()
+        defer { fixture.cleanup() }
+        let manager = FakeLocationManager(authorizationStatus: .authorizedAlways)
+        let service = LocationService(preferences: fixture.preferences, manager: manager)
+        var withdrawals = 0
+        service.onVisitMonitoringUnavailable = { withdrawals += 1 }
+
+        fixture.preferences.locationEnabled = true
+        service.setVisitMonitoringEnabled(true)
+        fixture.preferences.locationEnabled = false
+        service.cancelPendingRequestAfterConsentRevocation()
+
+        #expect(withdrawals == 1)
+    }
+
     // MARK: - Consent and the shared Always session
 
     /// Visit monitoring is process-wide and, per the SDK, continues "even

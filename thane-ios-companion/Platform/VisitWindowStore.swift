@@ -16,6 +16,8 @@ import Foundation
 final class VisitWindowStore {
     private let fileURL: URL
     private var visits: [VisitSnapshot] = []
+    /// Set when the cap discards a visit, so the published window can say so.
+    private var droppedSinceLastWindow = false
 
     init(profileID: String, storageDirectoryURL: URL? = nil) {
         let directory = (try? storageDirectoryURL ?? Self.defaultStorageDirectoryURL())
@@ -36,22 +38,37 @@ final class VisitWindowStore {
     /// Location delivers both.
     @discardableResult
     func record(_ visit: VisitSnapshot, now: Date = Date()) -> VisitWindowSnapshot {
-        visits.removeAll { $0.arrivedAt == visit.arrivedAt && $0.latitude == visit.latitude }
+        // Replace only when both sides name the same stay. Matching on a nil
+        // arrival would fold every missed-arrival visit into one, discarding
+        // unrelated places that happen to share a coordinate.
+        if let key = visit.stayKey {
+            visits.removeAll { $0.stayKey == key }
+        }
         visits.append(visit)
         prune(now: now)
         try? persist()
         return window(now: now)
     }
 
+    /// The window as of `now`, with the age cutoff applied on read.
+    ///
+    /// Pruning on write alone was not enough: between callbacks nothing runs,
+    /// and a file loaded at launch is arbitrarily old, so a 48-hour window
+    /// could return week-old entries and still advertise 48 hours.
     func window(now: Date = Date()) -> VisitWindowSnapshot {
-        let ordered = visits.sorted { $0.anchorDate > $1.anchorDate }
+        let cutoff = now.addingTimeInterval(-VisitWindowSnapshot.windowHours * 3600)
+        let fresh = visits.filter { $0.anchorDate >= cutoff }
+        let ordered = fresh.sorted { $0.anchorDate > $1.anchorDate }
         let kept = Array(ordered.prefix(VisitWindowSnapshot.maxEntries))
         return VisitWindowSnapshot(
             capturedAt: ObservationCoding.dateString(from: now),
             windowHours: VisitWindowSnapshot.windowHours,
             maxEntries: VisitWindowSnapshot.maxEntries,
             returnedCount: kept.count,
-            truncated: ordered.count > kept.count,
+            // Reported from what was actually dropped, counted before the cap.
+            // Deriving it here from the already-capped store made it
+            // permanently false, so a reader could not tell history was omitted.
+            truncated: droppedSinceLastWindow || ordered.count > kept.count,
             visits: kept
         )
     }
@@ -60,15 +77,34 @@ final class VisitWindowStore {
 
     /// Erases the window. Called wherever the operator withdraws visits, so
     /// turning the category off leaves nothing on the device to republish.
-    func discardAll() {
+    /// Erases the window, and reports whether the on-disk copy is really gone.
+    ///
+    /// Swallowing the failure emptied memory while leaving the file, so the
+    /// next launch reloaded a history the operator had withdrawn. When removal
+    /// fails, an empty window is written over it so a stale file cannot be
+    /// mistaken for valid history, and the caller is told.
+    @discardableResult
+    func discardAll() -> Bool {
         visits = []
-        try? FileManager.default.removeItem(at: fileURL)
+        droppedSinceLastWindow = false
+        do {
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                try FileManager.default.removeItem(at: fileURL)
+            }
+            return true
+        } catch {
+            try? persist()
+            return false
+        }
     }
 
     private func prune(now: Date) {
         let cutoff = now.addingTimeInterval(-VisitWindowSnapshot.windowHours * 3600)
         visits.removeAll { $0.anchorDate < cutoff }
         if visits.count > VisitWindowSnapshot.maxEntries {
+            // Record the loss before it is unobservable. Capping here is what
+            // makes `ordered.count > kept.count` false at read time.
+            droppedSinceLastWindow = true
             visits = Array(
                 visits.sorted { $0.anchorDate > $1.anchorDate }
                     .prefix(VisitWindowSnapshot.maxEntries)

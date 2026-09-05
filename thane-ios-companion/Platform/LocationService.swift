@@ -277,10 +277,17 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         // Visits are parented to location, so revoking the parent disarms the
         // child. Left set, it would resume the moment location was re-enabled,
         // which is bundled consent through the back door.
+        let wasVisitsEnabled = preferences.visitsEnabled
         preferences.visitsEnabled = false
         stopBackgroundMonitoring(invalidateSession: true)
         stopVisitMonitoring()
         invalidateAuthorizationSessionIfUnused()
+        // Stopping delivery is not withdrawal. Without this the server keeps
+        // serving the last visit observation and the window stays on disk,
+        // so revoking the parent silently retained both.
+        if wasVisitsEnabled {
+            onVisitMonitoringUnavailable?()
+        }
         finish(throwing: LocationServiceError.sharingDisabled)
     }
 
@@ -386,11 +393,18 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     func locationManagerDidChangeAuthorization(_: CLLocationManager) {
         let previousStatus = authorizationStatus
         authorizationStatus = manager.authorizationStatus
-        if preferences.backgroundLocationEnabled {
+        // Either consumer of Always, not just significant changes. Gated on
+        // backgroundLocationEnabled alone, a visits-only operator never had an
+        // Always upgrade start monitoring, and an Always revocation left
+        // isVisitMonitoringActive stale with no withdrawal.
+        if wantsSignificantChanges || wantsVisits {
             if previousStatus == .authorizedAlways,
                authorizationStatus != .authorizedAlways {
-                stopBackgroundMonitoring(invalidateSession: true)
+                stopBackgroundMonitoring(invalidateSession: false)
+                stopVisitMonitoring()
+                invalidateAuthorizationSessionIfUnused()
                 reportBackgroundUnavailableIfNeeded()
+                reportVisitsUnavailableIfNeeded()
             } else {
                 reconcileBackgroundMonitoring(allowAuthorizationRequest: false)
             }

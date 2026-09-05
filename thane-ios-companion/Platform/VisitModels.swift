@@ -30,6 +30,10 @@ nonisolated struct VisitSnapshot: Codable, Equatable, Sendable {
     let state: VisitState
     let dwellSeconds: Double?
     let dwellIsPartial: Bool
+    /// When this device observed the visit. Recorded because it is the only
+    /// timestamp guaranteed to exist: a departure is absent while ongoing and
+    /// an arrival is absent when missed.
+    let capturedAt: String
 
     enum CodingKeys: String, CodingKey {
         case latitude, longitude, arrival, state
@@ -38,19 +42,34 @@ nonisolated struct VisitSnapshot: Codable, Equatable, Sendable {
         case departedAt = "departed_at"
         case dwellSeconds = "dwell_seconds"
         case dwellIsPartial = "dwell_is_partial"
+        case capturedAt = "captured_at"
     }
 
-    /// The instant this visit is anchored to for ordering and freshness: the
-    /// departure when settled, the capture time while ongoing. Never the
-    /// arrival, which may be a sentinel.
+    /// The instant this visit is anchored to for ordering and pruning: the
+    /// departure when settled, the capture time otherwise.
+    ///
+    /// Deliberately not the arrival. An ongoing stay that began three days ago
+    /// is current, not stale, and anchoring it to its arrival pruned it on
+    /// sight; a missed arrival has no timestamp at all and fell back to
+    /// `.distantPast`, which pruned it immediately. Capture time is the one
+    /// value always present and always meaningful.
+    /// The `state` check guards a decoded record only: `make` derives state
+    /// and departure from one condition, so they cannot disagree in memory.
     var anchorDate: Date {
-        if let departedAt, let parsed = ObservationCoding.date(from: departedAt) {
+        if state == .settled, let departedAt,
+           let parsed = ObservationCoding.date(from: departedAt) {
             return parsed
         }
-        if let arrivedAt, let parsed = ObservationCoding.date(from: arrivedAt) {
-            return parsed
-        }
-        return .distantPast
+        return ObservationCoding.date(from: capturedAt) ?? .distantPast
+    }
+
+    /// Identity for ongoing-to-settled replacement. Core Location delivers the
+    /// same stay twice, but only a real arrival distinguishes one stay from
+    /// another — every missed arrival is nil, so matching on it would collapse
+    /// unrelated visits together.
+    var stayKey: String? {
+        guard let arrivedAt else { return nil }
+        return "\(arrivedAt)|\(latitude)|\(longitude)"
     }
 
     /// Built from CoreLocation's scalars rather than from `CLVisit` itself.
@@ -87,7 +106,8 @@ nonisolated struct VisitSnapshot: Codable, Equatable, Sendable {
             departedAt: departed ? ObservationCoding.dateString(from: departureDate) : nil,
             state: departed ? .settled : .ongoing,
             dwellSeconds: dwell,
-            dwellIsPartial: !departed
+            dwellIsPartial: !departed,
+            capturedAt: ObservationCoding.dateString(from: capturedAt)
         )
     }
 }

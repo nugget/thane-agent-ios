@@ -378,6 +378,11 @@ final class AgentProfile: Identifiable {
         cancelIdentityRefreshDeadline()
         connectionSettings.isEnabled = false
         connection.disconnect()
+        // The window is keyed by profile, and the profile ID survives removal —
+        // so without this a replacement agent bound to the same profile would
+        // inherit the removed agent's visit history the moment Visit History
+        // was switched on.
+        visitWindow.discardAll()
         do {
             try await observationPublisher.discardAllPending()
             try identityPinning.forget()
@@ -399,6 +404,7 @@ final class AgentProfile: Identifiable {
         do {
             try connectionSettings.deleteToken()
             tokenInput = ""
+            visitWindow.discardAll()
             try identityPinning.forget()
             try await observationPublisher.discardAllPending()
             try inboxStore.discardAllProfileData()
@@ -612,6 +618,10 @@ final class AgentProfile: Identifiable {
     }
 
     private func applySharingScope(_ counterpartyID: String?) {
+        // The window was gathered for the previous counterparty. Scoped by
+        // profile rather than by counterparty, it would otherwise carry across
+        // the boundary the rest of this method exists to enforce.
+        visitWindow.discardAll()
         locationService.suspendForCounterpartyChange()
         photoService.suspendForCounterpartyChange()
         sharingPreferences.scope(to: counterpartyID)
