@@ -1,0 +1,255 @@
+import CoreLocation
+import Foundation
+import Testing
+@testable import ThaneIOSCompanion
+
+@Suite("Visit monitoring")
+@MainActor
+struct VisitMonitoringTests {
+    private let ranch = CLLocationCoordinate2D(latitude: 29.8312, longitude: -98.4643)
+
+    // MARK: - Snapshot boundaries
+
+    /// CoreLocation signals a missed arrival with `.distantPast`. Passing it
+    /// through is worse than useless: it predates the server's 2000-01-01
+    /// floor, so as an event timestamp it 400s the whole batch and takes
+    /// unrelated location and system-context events down with it.
+    @Test("A missed arrival is reported as unknown, never as a timestamp")
+    func missedArrivalIsHonest() throws {
+        let departed = Date()
+        let visit = try #require(VisitSnapshot.make(
+            coordinate: ranch,
+            horizontalAccuracy: 12,
+            arrivalDate: .distantPast,
+            departureDate: departed,
+            capturedAt: departed
+        ))
+
+        #expect(visit.arrival == .unknown)
+        #expect(visit.arrivedAt == nil)
+        #expect(visit.dwellSeconds == nil)
+        #expect(visit.state == .settled)
+    }
+
+    @Test("An ongoing visit has no departure and a partial dwell")
+    func ongoingVisitIsMarked() throws {
+        let arrived = Date().addingTimeInterval(-3600)
+        let visit = try #require(VisitSnapshot.make(
+            coordinate: ranch,
+            horizontalAccuracy: 12,
+            arrivalDate: arrived,
+            departureDate: .distantFuture,
+            capturedAt: arrived.addingTimeInterval(3600)
+        ))
+
+        #expect(visit.state == .ongoing)
+        #expect(visit.departedAt == nil)
+        #expect(visit.dwellIsPartial)
+        #expect((visit.dwellSeconds ?? 0) >= 3599)
+    }
+
+    @Test("An invalid coordinate produces no visit")
+    func invalidCoordinateRejected() {
+        #expect(VisitSnapshot.make(
+            coordinate: CLLocationCoordinate2D(latitude: 91, longitude: 0),
+            horizontalAccuracy: 12,
+            arrivalDate: Date(),
+            departureDate: Date(),
+            capturedAt: Date()
+        ) == nil)
+        #expect(VisitSnapshot.make(
+            coordinate: ranch,
+            horizontalAccuracy: -1,
+            arrivalDate: Date(),
+            departureDate: Date(),
+            capturedAt: Date()
+        ) == nil)
+    }
+
+    /// The event timestamp must be capture time, never an arrival. This is the
+    /// assertion that keeps a missed arrival from rejecting the batch.
+    @Test("The published window is timestamped after the server floor")
+    func windowTimestampIsSane() throws {
+        let store = VisitWindowStore(fileURL: Self.tempFile())
+        defer { store.discardAll() }
+        let window = store.record(try #require(VisitSnapshot.make(
+            coordinate: ranch,
+            horizontalAccuracy: 9,
+            arrivalDate: .distantPast,
+            departureDate: .distantPast,
+            capturedAt: Date()
+        )))
+
+        let observedAt = try #require(ObservationCoding.date(from: window.capturedAt))
+        let floor = try #require(ISO8601DateFormatter().date(from: "2000-01-01T00:00:00Z"))
+        #expect(observedAt > floor)
+    }
+
+    // MARK: - The window
+
+    /// The outbox keeps one event per kind, so a one-visit-per-event design
+    /// would silently drop the earlier of two visits settling between flushes.
+    /// The window is re-sent whole for exactly this reason.
+    @Test("The window keeps several visits and stays bounded")
+    func windowAccumulatesAndBounds() throws {
+        let store = VisitWindowStore(fileURL: Self.tempFile())
+        defer { store.discardAll() }
+        let base = Date()
+
+        for i in 0..<(VisitWindowSnapshot.maxEntries + 4) {
+            _ = store.record(try #require(VisitSnapshot.make(
+                coordinate: CLLocationCoordinate2D(latitude: 29.8 + Double(i) / 1000, longitude: -98.4),
+                horizontalAccuracy: 10,
+                arrivalDate: base.addingTimeInterval(Double(i) * 60 - 3600),
+                departureDate: base.addingTimeInterval(Double(i) * 60),
+                capturedAt: base
+            )), now: base)
+        }
+
+        let window = store.window(now: base)
+        #expect(window.visits.count == VisitWindowSnapshot.maxEntries)
+        #expect(window.returnedCount == VisitWindowSnapshot.maxEntries)
+        #expect(window.visits.first?.anchorDate ?? .distantPast
+            > window.visits.last?.anchorDate ?? .distantFuture)
+    }
+
+    @Test("A settled visit replaces its ongoing self rather than duplicating")
+    func settledReplacesOngoing() throws {
+        let store = VisitWindowStore(fileURL: Self.tempFile())
+        defer { store.discardAll() }
+        let arrived = Date().addingTimeInterval(-1800)
+
+        _ = store.record(try #require(VisitSnapshot.make(
+            coordinate: ranch, horizontalAccuracy: 10,
+            arrivalDate: arrived, departureDate: .distantFuture, capturedAt: Date()
+        )))
+        let window = store.record(try #require(VisitSnapshot.make(
+            coordinate: ranch, horizontalAccuracy: 10,
+            arrivalDate: arrived, departureDate: Date(), capturedAt: Date()
+        )))
+
+        #expect(window.visits.count == 1)
+        #expect(window.visits.first?.state == .settled)
+    }
+
+    @Test("The window survives a relaunch")
+    func windowPersists() throws {
+        let url = Self.tempFile()
+        let first = VisitWindowStore(fileURL: url)
+        _ = first.record(try #require(VisitSnapshot.make(
+            coordinate: ranch, horizontalAccuracy: 10,
+            arrivalDate: Date().addingTimeInterval(-600), departureDate: Date(), capturedAt: Date()
+        )))
+
+        let relaunched = VisitWindowStore(fileURL: url)
+        defer { relaunched.discardAll() }
+        #expect(relaunched.window().visits.count == 1)
+    }
+
+    @Test("Discarding leaves nothing to republish")
+    func discardClearsTheWindow() throws {
+        let url = Self.tempFile()
+        let store = VisitWindowStore(fileURL: url)
+        _ = store.record(try #require(VisitSnapshot.make(
+            coordinate: ranch, horizontalAccuracy: 10,
+            arrivalDate: Date().addingTimeInterval(-600), departureDate: Date(), capturedAt: Date()
+        )))
+        store.discardAll()
+
+        #expect(store.isEmpty)
+        #expect(VisitWindowStore(fileURL: url).window().visits.isEmpty)
+    }
+
+    // MARK: - Consent and the shared Always session
+
+    /// Visit monitoring is process-wide and, per the SDK, continues "even
+    /// across application relaunch events". A restore that finds it disabled
+    /// must actively send stopMonitoringVisits; merely returning leaves the
+    /// system delivering visits the operator switched off.
+    @Test("A launch with visits disabled stops monitoring rather than returning")
+    func disabledLaunchStopsMonitoring() throws {
+        let fixture = try PreferencesFixture()
+        defer { fixture.cleanup() }
+        let manager = FakeLocationManager(authorizationStatus: .authorizedAlways)
+        let service = LocationService(preferences: fixture.preferences, manager: manager)
+
+        service.restoreBackgroundMonitoringIfAuthorized()
+
+        #expect(manager.stopVisitsCount >= 1)
+        #expect(manager.startVisitsCount == 0)
+    }
+
+    /// The Always session is shared with significant-change monitoring. Keying
+    /// its teardown to background location alone tore it down for visits.
+    @Test("Visits keep the Always session with background location off")
+    func visitsHoldTheSharedSession() throws {
+        let fixture = try PreferencesFixture()
+        defer { fixture.cleanup() }
+        let manager = FakeLocationManager(authorizationStatus: .authorizedAlways)
+        let session = FakeAuthorizationSession()
+        let service = LocationService(
+            preferences: fixture.preferences,
+            manager: manager,
+            authorizationSessionFactory: { session }
+        )
+
+        fixture.preferences.locationEnabled = true
+        fixture.preferences.backgroundLocationEnabled = false
+        fixture.preferences.visitsEnabled = true
+        service.restoreBackgroundMonitoringIfAuthorized()
+
+        #expect(service.isVisitMonitoringActive)
+        #expect(manager.startVisitsCount >= 1)
+        #expect(manager.startSignificantCount == 0)
+        // The point of the test: with significant changes off, the session is
+        // held by visits alone and must not be invalidated. Asserting only the
+        // monitoring flags left the session lifetime untested.
+        #expect(session.invalidateCount == 0)
+    }
+
+    /// Revoking the parent must disarm the child, or re-enabling Location
+    /// later resumes visits silently — bundled consent through the back door.
+    @Test("Revoking Location disarms visits")
+    func revokingLocationDisarmsVisits() throws {
+        let fixture = try PreferencesFixture()
+        defer { fixture.cleanup() }
+        let manager = FakeLocationManager(authorizationStatus: .authorizedAlways)
+        let service = LocationService(preferences: fixture.preferences, manager: manager)
+
+        fixture.preferences.locationEnabled = true
+        fixture.preferences.visitsEnabled = true
+        service.restoreBackgroundMonitoringIfAuthorized()
+        #expect(service.isVisitMonitoringActive)
+
+        fixture.preferences.locationEnabled = false
+        service.cancelPendingRequestAfterConsentRevocation()
+
+        #expect(fixture.preferences.visitsEnabled == false)
+        #expect(service.isVisitMonitoringActive == false)
+    }
+
+    /// A visit can arrive "possibly from a prior launch", so consent is
+    /// re-checked at delivery rather than assumed from whatever armed it.
+    @Test("The tool refuses when visit sharing is off")
+    func toolRefusesWhenDisabled() async throws {
+        let fixture = try PreferencesFixture()
+        defer { fixture.cleanup() }
+        let store = VisitWindowStore(fileURL: Self.tempFile())
+        defer { store.discardAll() }
+        let handler = VisitsPlatformHandler(store: store, preferences: fixture.preferences)
+
+        await #expect(throws: VisitsHandlerError.self) {
+            _ = try await handler.handle(method: "get_recent_visits", params: [:])
+        }
+
+        fixture.preferences.locationEnabled = true
+        fixture.preferences.visitsEnabled = true
+        let answered = try await handler.handle(method: "get_recent_visits", params: [:])
+        #expect(answered.value is [String: Any])
+    }
+
+    private static func tempFile() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("visits-\(UUID().uuidString).json")
+    }
+}

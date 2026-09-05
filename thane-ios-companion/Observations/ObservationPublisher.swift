@@ -129,6 +129,27 @@ final class ObservationPublisher {
         }
     }
 
+    /// Records the recent-visit window. Ungated at capture for the same reason
+    /// as `publishLocation`.
+    ///
+    /// `observed_at` is the window's capture time, never a visit's arrival: an
+    /// unobserved arrival is `Date.distantPast`, which is below the server's
+    /// 2000-01-01 floor and would reject the entire batch — taking unrelated
+    /// location and system-context events down with it.
+    func publishVisits(_ window: VisitWindowSnapshot) {
+        guard let observedAt = ObservationCoding.date(from: window.capturedAt) else {
+            lastError = "A visit window timestamp could not be encoded."
+            return
+        }
+        enqueue {
+            try ObservationEvent.available(
+                kind: .visits,
+                observedAt: observedAt,
+                payload: window
+            )
+        }
+    }
+
     /// Records a system-context snapshot. Ungated at capture for the same
     /// reason as `publishLocation`.
     func publishSystemContext(_ snapshot: SystemContextSnapshot) {

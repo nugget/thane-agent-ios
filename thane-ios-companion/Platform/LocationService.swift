@@ -12,6 +12,8 @@ protocol LocationManaging: AnyObject {
     func requestLocation()
     func startMonitoringSignificantLocationChanges()
     func stopMonitoringSignificantLocationChanges()
+    func startMonitoringVisits()
+    func stopMonitoringVisits()
 }
 
 extension CLLocationManager: LocationManaging {}
@@ -124,12 +126,16 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     private var timeoutTask: Task<Void, Never>?
     private var authorizationSession: (any LocationAuthorizationSession)?
     private var reportedBackgroundUnavailable = false
+    private var reportedVisitsUnavailable = false
+    private(set) var isVisitMonitoringActive = false
 
     private(set) var authorizationStatus: CLAuthorizationStatus
     let isSignificantLocationChangeMonitoringAvailable: Bool
     private(set) var isBackgroundMonitoringActive = false
     var onSignificantLocation: ((LocationSnapshot) -> Void)?
     var onBackgroundLocationUnavailable: (() -> Void)?
+    var onVisit: ((VisitSnapshot) -> Void)?
+    var onVisitMonitoringUnavailable: (() -> Void)?
 
     init(
         preferences: SharingPreferences,
@@ -200,12 +206,21 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     /// permission prompt.
     func restoreBackgroundMonitoringIfAuthorized() {
         authorizationStatus = manager.authorizationStatus
-        guard preferences.locationEnabled, preferences.backgroundLocationEnabled else {
+        guard wantsSignificantChanges || wantsVisits else {
+            // Not merely "nothing to restore". Visit monitoring is process-wide
+            // and survives termination, so a launch that finds it disabled has
+            // to send stopMonitoringVisits rather than return — otherwise the
+            // system keeps delivering visits the operator switched off.
+            stopBackgroundMonitoring(invalidateSession: false)
+            stopVisitMonitoring()
+            invalidateAuthorizationSessionIfUnused()
             return
         }
         guard authorizationStatus == .authorizedAlways else {
             stopBackgroundMonitoring(invalidateSession: false)
+            stopVisitMonitoring()
             reportBackgroundUnavailableIfNeeded()
+            reportVisitsUnavailableIfNeeded()
             return
         }
         reconcileBackgroundMonitoring(allowAuthorizationRequest: false)
@@ -242,12 +257,20 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     func cancelPendingRequestAfterConsentRevocation() {
         guard !preferences.locationEnabled else { return }
         preferences.backgroundLocationEnabled = false
+        // Visits are parented to location, so revoking the parent disarms the
+        // child. Left set, it would resume the moment location was re-enabled,
+        // which is bundled consent through the back door.
+        preferences.visitsEnabled = false
         stopBackgroundMonitoring(invalidateSession: true)
+        stopVisitMonitoring()
+        invalidateAuthorizationSessionIfUnused()
         finish(throwing: LocationServiceError.sharingDisabled)
     }
 
     func suspendForCounterpartyChange() {
         stopBackgroundMonitoring(invalidateSession: true)
+        stopVisitMonitoring()
+        invalidateAuthorizationSessionIfUnused()
         finish(throwing: LocationServiceError.sharingDisabled)
     }
 
@@ -283,6 +306,27 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         if pendingContinuation != nil {
             finish(returning: snapshot)
         }
+    }
+
+    func locationManager(_: CLLocationManager, didVisit visit: CLVisit) {
+        // Per the SDK a visit may arrive "possibly from a prior launch", so
+        // consent is re-checked here rather than assumed from whatever armed
+        // monitoring.
+        guard preferences.locationEnabled, preferences.visitsEnabled else {
+            stopVisitMonitoring()
+            return
+        }
+        guard let snapshot = VisitSnapshot.make(
+            coordinate: visit.coordinate,
+            horizontalAccuracy: visit.horizontalAccuracy,
+            arrivalDate: visit.arrivalDate,
+            departureDate: visit.departureDate,
+            capturedAt: Date()
+        ) else {
+            return
+        }
+        reportedVisitsUnavailable = false
+        onVisit?(snapshot)
     }
 
     private static func snapshot(
@@ -369,35 +413,100 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         continuation?.resume(throwing: error)
     }
 
+    /// True when either background consumer needs Always. The authorization
+    /// session is shared, so its lifetime has to be the union of the two —
+    /// keying it to background location alone tore it down for visits.
+    private var wantsSignificantChanges: Bool {
+        preferences.locationEnabled && preferences.backgroundLocationEnabled
+    }
+
+    private var wantsVisits: Bool {
+        preferences.locationEnabled && preferences.visitsEnabled
+    }
+
     private func reconcileBackgroundMonitoring(allowAuthorizationRequest: Bool) {
-        guard preferences.locationEnabled, preferences.backgroundLocationEnabled else {
+        guard wantsSignificantChanges || wantsVisits else {
             stopBackgroundMonitoring(invalidateSession: true)
+            stopVisitMonitoring()
+            invalidateAuthorizationSessionIfUnused()
             return
         }
 
         switch authorizationStatus {
         case .authorizedAlways:
-            guard isSignificantLocationChangeMonitoringAvailable else {
-                stopBackgroundMonitoring(invalidateSession: true)
-                reportBackgroundUnavailableIfNeeded()
-                return
-            }
             if authorizationSession == nil {
                 authorizationSession = authorizationSessionFactory()
             }
-            guard !isBackgroundMonitoringActive else { return }
-            manager.startMonitoringSignificantLocationChanges()
-            isBackgroundMonitoringActive = true
+            if wantsSignificantChanges {
+                if isSignificantLocationChangeMonitoringAvailable {
+                    if !isBackgroundMonitoringActive {
+                        manager.startMonitoringSignificantLocationChanges()
+                        isBackgroundMonitoringActive = true
+                    }
+                } else {
+                    stopBackgroundMonitoring(invalidateSession: false)
+                    reportBackgroundUnavailableIfNeeded()
+                }
+            } else {
+                stopBackgroundMonitoring(invalidateSession: false)
+            }
+            if wantsVisits {
+                startVisitMonitoring()
+            } else {
+                stopVisitMonitoring()
+            }
+            invalidateAuthorizationSessionIfUnused()
         case .notDetermined, .authorizedWhenInUse:
             stopBackgroundMonitoring(invalidateSession: false)
+            stopVisitMonitoring()
             if allowAuthorizationRequest, authorizationSession == nil {
                 authorizationSession = authorizationSessionFactory()
             }
         case .denied, .restricted:
             stopBackgroundMonitoring(invalidateSession: true)
+            stopVisitMonitoring()
+            reportVisitsUnavailableIfNeeded()
+            invalidateAuthorizationSessionIfUnused()
         @unknown default:
             stopBackgroundMonitoring(invalidateSession: true)
+            stopVisitMonitoring()
+            invalidateAuthorizationSessionIfUnused()
         }
+    }
+
+    private func startVisitMonitoring() {
+        guard !isVisitMonitoringActive else { return }
+        manager.startMonitoringVisits()
+        isVisitMonitoringActive = true
+        reportedVisitsUnavailable = false
+    }
+
+    /// Always sends `stopMonitoringVisits`, never merely clears the flag.
+    /// Visit monitoring is process-wide and, per the SDK, "will continue until
+    /// -stopMonitoringVisits is sent ... even across application relaunch
+    /// events" — so a local bool going false while the system keeps delivering
+    /// is a live leak, not a tidy no-op.
+    private func stopVisitMonitoring() {
+        manager.stopMonitoringVisits()
+        isVisitMonitoringActive = false
+    }
+
+    /// The session is only released once neither consumer wants it.
+    private func invalidateAuthorizationSessionIfUnused() {
+        guard !isBackgroundMonitoringActive, !isVisitMonitoringActive else { return }
+        authorizationSession?.invalidate()
+        authorizationSession = nil
+    }
+
+    private func reportVisitsUnavailableIfNeeded() {
+        guard preferences.visitsEnabled,
+              authorizationStatus != .authorizedAlways,
+              !reportedVisitsUnavailable,
+              let onVisitMonitoringUnavailable else {
+            return
+        }
+        reportedVisitsUnavailable = true
+        onVisitMonitoringUnavailable()
     }
 
     private func stopBackgroundMonitoring(invalidateSession: Bool) {

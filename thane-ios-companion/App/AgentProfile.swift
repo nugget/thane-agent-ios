@@ -12,6 +12,7 @@ final class AgentProfile: Identifiable {
     let connection: ServerConnection
     let platformRouter: PlatformServiceRouter
     let locationService: LocationService
+    let visitWindow: VisitWindowStore
     let photoService: PhotoService
     let observationPublisher: ObservationPublisher
     let identityService: IdentityService
@@ -56,10 +57,12 @@ final class AgentProfile: Identifiable {
         // Sourced unconditionally from the settings object so no collaborator
         // can address a different SHA-256 storage directory than another.
         let profileID = connectionSettings.profileID
+        let visitWindow = VisitWindowStore(profileID: profileID)
         let observationPublisher = observationPublisher ?? ObservationPublisher(
             outbox: ObservationOutbox(profileID: profileID),
             uploader: URLSessionObservationUploader(profileID: profileID)
         )
+        self.visitWindow = visitWindow
         self.id = profileID
         self.connectionSettings = connectionSettings
         self.sharingPreferences = sharingPreferences
@@ -97,6 +100,15 @@ final class AgentProfile: Identifiable {
         locationService.onBackgroundLocationUnavailable = { [weak observationPublisher] in
             observationPublisher?.withdraw(.location)
         }
+        locationService.onVisit = { [weak self, weak observationPublisher] visit in
+            guard let self else { return }
+            observationPublisher?.publishVisits(visitWindow.record(visit))
+            refreshIdentityOpportunistically()
+        }
+        locationService.onVisitMonitoringUnavailable = { [weak self, weak observationPublisher] in
+            self?.visitWindow.discardAll()
+            observationPublisher?.withdraw(.visits)
+        }
         locationService.restoreBackgroundMonitoringIfAuthorized()
         systemService.setChangeHandler { [weak self] in
             self?.publishSystemContextIfEnabled()
@@ -113,6 +125,13 @@ final class AgentProfile: Identifiable {
         router.register(
             capability: "ios.photos",
             handler: PhotoPlatformHandler(service: photoService)
+        )
+        router.register(
+            capability: "ios.visits",
+            handler: VisitsPlatformHandler(
+                store: visitWindow,
+                preferences: sharingPreferences
+            )
         )
         connection.registeredCapabilities = router.capabilities
         connection.onPlatformRequest = { [weak router] request in

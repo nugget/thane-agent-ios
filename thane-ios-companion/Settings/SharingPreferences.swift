@@ -56,6 +56,14 @@ final class SharingPreferences {
     var photosEnabled: Bool {
         didSet { persist(photosEnabled, key: "photos") }
     }
+    /// Visit monitoring: places the operator lingered, with arrival and
+    /// departure times. Its own category rather than a rider on background
+    /// location — agreeing to publish a position when the phone moves is not
+    /// agreeing to a record of where time is spent, and bundling the two would
+    /// be exactly the consent AGENTS.md forbids.
+    var visitsEnabled: Bool {
+        didSet { persist(visitsEnabled, key: "visits") }
+    }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -66,6 +74,7 @@ final class SharingPreferences {
         locationEnabled = false
         backgroundLocationEnabled = false
         photosEnabled = false
+        visitsEnabled = false
     }
 
     var enabledSystemCategories: Set<SystemContextCategory> {
@@ -73,7 +82,7 @@ final class SharingPreferences {
     }
 
     var hasEnabledData: Bool {
-        !enabledSystemCategories.isEmpty || locationEnabled || photosEnabled
+        !enabledSystemCategories.isEmpty || locationEnabled || photosEnabled || visitsEnabled
     }
 
     func isEnabled(_ category: SystemContextCategory) -> Bool {
@@ -107,6 +116,7 @@ final class SharingPreferences {
             locationEnabled = false
             backgroundLocationEnabled = false
             photosEnabled = false
+            visitsEnabled = false
             return
         }
 
@@ -130,9 +140,17 @@ final class SharingPreferences {
             for: "background-location",
             counterpartyID: counterpartyID
         )
+        let storedVisitsEnabled = storedValue(
+            for: "visits",
+            counterpartyID: counterpartyID
+        )
         locationEnabled = storedLocationEnabled
         backgroundLocationEnabled = storedLocationEnabled
             && storedBackgroundLocationEnabled
+        // Visits are parented to location for the same reason background
+        // updates are: a child left armed under a revoked parent resumes
+        // silently when the parent is re-enabled.
+        visitsEnabled = storedLocationEnabled && storedVisitsEnabled
         photosEnabled = storedValue(
             for: "photos",
             counterpartyID: counterpartyID
@@ -142,6 +160,9 @@ final class SharingPreferences {
                 false,
                 forKey: Self.scopedKey(counterpartyID, "background-location")
             )
+        }
+        if !storedLocationEnabled, storedVisitsEnabled {
+            defaults.set(false, forKey: Self.scopedKey(counterpartyID, "visits"))
         }
     }
 
@@ -187,6 +208,7 @@ final class SharingPreferences {
         "location",
         "background-location",
         "photos",
+        "visits",
     ]
 
     private nonisolated static func legacyKey(_ suffix: String) -> String {
